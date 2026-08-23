@@ -82,6 +82,17 @@ fn main() {
                     if let Some(ui) = weak.upgrade() {
                         if let Some(hwnd) = native_hwnd(&ui) {
                             win32::apply_borderless_chrome(hwnd);
+                            // Dropping files anywhere on the window plays them;
+                            // WM_DROPFILES is dispatched on this UI thread.
+                            let drop_player = player.clone();
+                            win32::install_file_drop(
+                                hwnd,
+                                Box::new(move |files| {
+                                    if let Some(path) = files.into_iter().next() {
+                                        drop_player.load_file(&path);
+                                    }
+                                }),
+                            );
                             eprintln!("[neko] borderless chrome applied");
                         } else {
                             eprintln!("[neko] no native window handle; keeping system frame");
