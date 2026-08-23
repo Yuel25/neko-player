@@ -1,0 +1,12 @@
+/target
+third_party/mpv/include/
+third_party/mpv/libmpv-2.dll
+third_party/mpv/libmpv.dll.a
+third_party/mpv/libmpv-2.lib
+third_party/mpv/libmpv-2.exp
+third_party/mpv/mpv.def
+third_party/mpv/exports.txt
+third_party/mpv-dev.7z
+.test/
+/dist/
+HANDOFF.md

@@ -1,0 +1,14 @@
+[package]
+name = "neko-player"
+version = "0.1.0"
+edition = "2021"
+description = "A beautiful media player powered by libmpv + Slint"
+
+[dependencies]
+slint = { version = "1", features = ["raw-window-handle-06"] }
+glow = "0.14"
+rfd = "0.15"
+raw-window-handle = "0.6"
+
+[build-dependencies]
+slint-build = "1"

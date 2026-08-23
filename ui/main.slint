@@ -1,0 +1,257 @@
+component TrafficLight inherits Rectangle {
+    in property <string> glyph; in property <color> circle-color; callback clicked();
+    width: 14px; height: 100%; background: transparent;
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Rectangle {
+        x: 1px; y: (parent.height - 12px) / 2; width: 12px; height: 12px;
+        border-radius: 6px; background: root.circle-color; border-width: 1px; border-color: #00000030;
+        Text { text: root.glyph; visible: touch.has-hover; color: #2b2528d0; font-size: 9px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+    }
+}
+
+component RoundButton inherits Rectangle {
+    in property <string> glyph; in property <bool> primary: false; in property <bool> enabled: true; callback clicked();
+    width: self.primary ? 38px : 32px; height: self.primary ? 38px : 32px; border-radius: self.height / 2;
+    background: !self.enabled ? #24242b80 : touch.pressed ? (self.primary ? #7043da : #34343e) : touch.has-hover ? (self.primary ? #9d78fa : #303039) : (self.primary ? #8b5cf6 : #272730);
+    animate background { duration: 100ms; }
+    Text { text: root.glyph; color: root.enabled ? #f7f5ff : #777781; font-size: root.primary ? 15px : 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component PlayButton inherits Rectangle {
+    in property <bool> paused: true;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: 42px;
+    height: 42px;
+    border-radius: 21px;
+    background: !self.enabled ? #41365a80 : touch.pressed ? #7043da : touch.has-hover ? #9d78fa : #8b5cf6;
+    animate background { duration: 100ms; }
+
+    // A geometric play mark instead of a font glyph.
+    Path {
+        visible: root.paused;
+        x: 15px;
+        y: 12px;
+        width: 15px;
+        height: 18px;
+        viewbox-width: 15;
+        viewbox-height: 18;
+        commands: "M 1 1 L 14 9 L 1 17 Z";
+        fill: root.enabled ? #ffffff : #8e879b;
+    }
+    Rectangle {
+        visible: !root.paused;
+        x: 14px;
+        y: 12px;
+        width: 5px;
+        height: 18px;
+        border-radius: 2px;
+        background: root.enabled ? #ffffff : #8e879b;
+    }
+    Rectangle {
+        visible: !root.paused;
+        x: 23px;
+        y: 12px;
+        width: 5px;
+        height: 18px;
+        border-radius: 2px;
+        background: root.enabled ? #ffffff : #8e879b;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component PillButton inherits Rectangle {
+    in property <string> label; in property <bool> enabled: true; callback clicked();
+    height: 30px; border-radius: 8px;
+    background: !self.enabled ? #22222970 : touch.pressed ? #353540 : touch.has-hover ? #2d2d37 : #24242c;
+    border-width: 1px; border-color: touch.has-hover && self.enabled ? #8b5cf650 : #ffffff0a;
+    animate background { duration: 100ms; }
+    Text { text: root.label; color: root.enabled ? #c9c7d2 : #666670; font-size: 11px; overflow: elide; horizontal-alignment: center; vertical-alignment: center; }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+export component MainWindow inherits Window {
+    title: root.has-media ? "neko player — " + root.media-title : "neko player";
+    no-frame: true; background: #09090c; preferred-width: 1100px; preferred-height: 650px; min-width: 920px; min-height: 460px; forward-focus: key-handler;
+
+    in property <image> video-frame; in property <string> media-title: ""; in property <string> time-text: "00:00"; in property <string> duration-text: "00:00";
+    in property <float> progress: 0; in property <bool> paused: true; in property <bool> has-media: false; in property <float> volume: 100; in property <bool> muted: false;
+    in property <string> speed-text: "1.00x"; in property <string> audio-label: "音轨 -"; in property <string> sub-label: "字幕 -";
+    in property <string> lyric-text: "";
+    in property <bool> controls-visible: true; in property <bool> fullscreen: false; in property <bool> win-maximized: false;
+    out property <bool> bar-hover: bar-touch.has-hover;
+
+    callback play-pause(); callback seek(float); callback open-file(); callback cycle-audio(); callback cycle-sub(); callback cycle-speed(); callback toggle-mute();
+    callback set-volume(float); callback volume-by(float); callback seek-by(float); callback toggle-fullscreen(); callback notify-activity(); callback titlebar-drag();
+    callback step-frame(int);
+    callback minimize-window(); callback toggle-maximize(); callback close-window();
+    callback save-current-frame();
+
+    Rectangle {
+        y: root.fullscreen ? 0px : 48px; height: parent.height - self.y; background: #050507;
+        Image { source: root.video-frame; image-fit: ImageFit.contain; width: 100%; height: 100%; }
+        video-touch := TouchArea {
+            changed mouse-x => { root.notify-activity(); } changed mouse-y => { root.notify-activity(); }
+            clicked => { root.play-pause(); } double-clicked => { root.toggle-fullscreen(); }
+            scroll-event(e) => { root.volume-by(e.delta-y > 0 ? 5 : -5); accept }
+        }
+        Rectangle {
+            visible: !root.has-media; width: 280px; height: 280px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2 - 12px;
+            background: transparent;
+            Image { x: (parent.width - self.width) / 2; y: 0; source: @image-url("../assets/neko-player-icon.png"); width: 112px; height: 112px; image-fit: ImageFit.contain; }
+            Text { x: 0; y: 132px; width: parent.width; height: 28px; text: "把故事留在这一帧"; color: #e7e4ef; font-size: 18px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+            Text { x: 0; y: 171px; width: parent.width; height: 20px; text: "打开视频，或直接拖入媒体文件"; color: #777582; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+            PillButton { x: (parent.width - self.width) / 2; y: 216px; width: 112px; height: 34px; label: "打开文件"; clicked => { root.open-file(); } }
+        }
+    }
+
+    Rectangle {
+        visible: !root.fullscreen; x: 0; y: 0; width: root.width; height: 48px; background: #141419f7; border-width: 1px; border-color: #ffffff08;
+        title-drag := TouchArea {
+            // Keep native dragging away from the traffic-light hit targets.
+            x: 82px; y: 0; width: parent.width - 164px; height: parent.height;
+            changed pressed => { if (self.pressed && !root.win-maximized) { root.titlebar-drag(); } }
+            double-clicked => { root.toggle-maximize(); }
+        }
+        HorizontalLayout {
+            x: 14px; y: 0; width: 58px; height: parent.height; spacing: 7px;
+            TrafficLight { glyph: "×"; circle-color: #ff5f57; clicked => { root.close-window(); } }
+            TrafficLight { glyph: "−"; circle-color: #febc2e; clicked => { root.minimize-window(); } }
+            TrafficLight { glyph: "+"; circle-color: #28c840; clicked => { root.toggle-maximize(); } }
+        }
+        Text {
+            x: 110px; width: parent.width - 220px; height: parent.height; text: root.has-media ? root.media-title : "neko player";
+            color: root.has-media ? #aaa8b4 : #8b5cf6; font-size: 12px; font-weight: 500; overflow: elide; horizontal-alignment: center; vertical-alignment: center;
+        }
+    }
+
+    key-handler := FocusScope {
+        key-pressed(event) => {
+            if (event.text == " ") { root.play-pause(); accept }
+            else if (event.text == "→" || event.text == "Right") { root.seek-by(5); accept }
+            else if (event.text == "←" || event.text == "Left") { root.seek-by(-5); accept }
+            else if (event.text == "↑" || event.text == "Up") { root.volume-by(5); accept }
+            else if (event.text == "↓" || event.text == "Down") { root.volume-by(-5); accept }
+            else if (event.text == "m" || event.text == "M") { root.toggle-mute(); accept }
+            else if (event.text == "f" || event.text == "F") { root.toggle-fullscreen(); accept }
+            else if (event.text == "Escape") { if (root.fullscreen) { root.toggle-fullscreen(); } accept }
+            else { reject }
+        }
+    }
+
+    Rectangle {
+        x: root.fullscreen ? 22px : 18px; width: root.width - 2 * self.x; y: root.height - self.height - (root.fullscreen ? 18px : 16px); height: 88px;
+        border-radius: 14px; opacity: root.controls-visible ? 1.0 : 0.0; animate opacity { duration: 180ms; easing: ease-out; }
+        background: #17171eea; border-width: 1px; border-color: #ffffff12; drop-shadow-color: #00000070; drop-shadow-blur: 22px; drop-shadow-offset-y: 8px;
+        bar-touch := TouchArea { changed mouse-x => { root.notify-activity(); } changed mouse-y => { root.notify-activity(); } }
+
+        Text { x: 16px; y: 9px; width: 46px; height: 18px; text: root.time-text; color: #c9c7d2; font-size: 11px; vertical-alignment: center; }
+        Rectangle {
+            x: 66px; y: 15px; width: parent.width - 132px; height: 4px; border-radius: 2px; background: #393841;
+            progress-fill := Rectangle {
+                x: 0;
+                width: parent.width * clamp(root.progress, 0.0, 1.0);
+                height: 100%;
+                border-radius: 2px;
+                background: @linear-gradient(90deg, #7650e8, #a87cff);
+            }
+            Rectangle {
+                x: clamp(progress-fill.width - self.width / 2, 0px, parent.width - self.width);
+                y: -4px;
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                background: #f4f0ff;
+                border-width: 3px;
+                border-color: #8b5cf6;
+                visible: root.has-media;
+            }
+            TouchArea {
+                y: -8px; height: 20px; mouse-cursor: pointer; clicked => { root.seek(self.mouse-x / self.width); }
+                pointer-event(_) => { if self.pressed { root.seek(self.mouse-x / self.width); } }
+            }
+        }
+        Text { x: parent.width - 58px; y: 9px; width: 44px; height: 18px; text: root.duration-text; color: #777582; font-size: 11px; horizontal-alignment: right; vertical-alignment: center; }
+
+        // Keep the three control clusters independent. The transport group is
+        // always geometrically centered, regardless of side-group widths.
+        HorizontalLayout {
+            x: 14px; y: 38px; width: 216px; height: 42px; spacing: 8px; alignment: center;
+            PillButton { width: 104px; label: root.audio-label; enabled: root.has-media; clicked => { root.cycle-audio(); } }
+            PillButton { width: 104px; label: root.sub-label; enabled: root.has-media; clicked => { root.cycle-sub(); } }
+        }
+
+        HorizontalLayout {
+            x: (parent.width - self.width) / 2; y: 36px; width: 202px; height: 42px; spacing: 8px; alignment: center;
+            RoundButton { glyph: "−1"; enabled: root.has-media; clicked => { root.step-frame(-1); } }
+            RoundButton { glyph: "−10"; enabled: root.has-media; clicked => { root.seek-by(-10); } }
+            PlayButton { paused: root.paused || !root.has-media; enabled: root.has-media; clicked => { root.play-pause(); } }
+            RoundButton { glyph: "+10"; enabled: root.has-media; clicked => { root.seek-by(10); } }
+            RoundButton { glyph: "+1"; enabled: root.has-media; clicked => { root.step-frame(1); } }
+        }
+
+        HorizontalLayout {
+            x: parent.width - self.width - 14px; y: 38px; width: 320px; height: 42px; spacing: 8px; alignment: center;
+            PillButton { width: 58px; label: root.speed-text; enabled: root.has-media; clicked => { root.cycle-speed(); } }
+            RoundButton { glyph: root.muted ? "×" : "♪"; clicked => { root.toggle-mute(); } }
+            Rectangle {
+                width: 72px; height: 26px;
+                Rectangle {
+                    x: 0; y: (parent.height - 4px) / 2; width: parent.width; height: 4px; border-radius: 2px; background: #393841;
+                    volume-fill := Rectangle {
+                        x: 0;
+                        width: parent.width * clamp(root.volume / 100, 0.0, 1.0);
+                        height: 100%;
+                        border-radius: 2px;
+                        background: #b7b4c2;
+                    }
+                    Rectangle {
+                        x: clamp(volume-fill.width - self.width / 2, 0px, parent.width - self.width);
+                        y: -3px;
+                        width: 10px;
+                        height: 10px;
+                        border-radius: 5px;
+                        background: #f4f0ff;
+                        border-width: 2px;
+                        border-color: #8b5cf6;
+                    }
+                }
+                TouchArea {
+                    mouse-cursor: pointer; clicked => { root.set-volume(100 * self.mouse-x / self.width); }
+                    pointer-event(_) => { if self.pressed { root.set-volume(100 * self.mouse-x / self.width); } }
+                }
+            }
+            PillButton { width: 56px; label: "截图"; enabled: root.has-media; clicked => { root.save-current-frame(); } }
+            PillButton { width: 62px; label: "打开"; clicked => { root.open-file(); } }
+        }
+    }
+
+    Rectangle {
+        visible: root.lyric-text != "";
+        x: 80px;
+        y: root.height - (root.controls-visible ? 150px : 72px);
+        width: root.width - 160px;
+        height: 42px;
+        border-radius: 12px;
+        background: #09090ca8;
+        Text {
+            x: 18px;
+            width: parent.width - 36px;
+            height: parent.height;
+            text: root.lyric-text;
+            color: #f4f0ff;
+            font-family: "Yu Gothic UI";
+            font-size: 18px;
+            font-weight: 600;
+            overflow: elide;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        animate y { duration: 180ms; easing: ease-out; }
+    }
+}
