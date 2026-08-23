@@ -49,8 +49,18 @@ jobs:
             Move-Item third_party/mpv/mpv-2.dll third_party/mpv/libmpv-2.dll
           }
           if (-not (Test-Path third_party/mpv/libmpv-2.lib)) {
-            $def = (Get-ChildItem third_party/mpv -Filter '*.def' | Select-Object -First 1).FullName
-            lib "/def:$def" /name:libmpv-2.dll /out:third_party/mpv/libmpv-2.lib /machine:x64
+            # 2026-08 起的 mpv-dev 包只含 include/、libmpv-2.dll、libmpv.dll.a，
+            # 不再附带 mpv.def —— 用 dumpbin 从 DLL 导出表生成 def，再产出导入库
+            'LIBRARY "libmpv-2.dll"', 'EXPORTS' | Set-Content third_party/mpv/mpv.def
+            dumpbin /exports third_party/mpv/libmpv-2.dll |
+              Select-String '^\s+\d+\s+[0-9A-Fa-fxX]+\s+[0-9A-Fa-fxX]+\s+(\S+)$' |
+              ForEach-Object { '  ' + $_.Matches[0].Groups[1].Value } |
+              Add-Content third_party/mpv/mpv.def
+            lib "/def:third_party/mpv/mpv.def" /name:libmpv-2.dll /out:third_party/mpv/libmpv-2.lib /machine:x64
+          }
+          # 硬校验：导入库必须真的包含 mpv 符号（空 /def: 会静默生成空库导致链接失败）
+          if (-not (dumpbin /linkermember third_party/mpv/libmpv-2.lib | Select-String 'mpv_create')) {
+            throw 'libmpv-2.lib 不含 mpv 符号：导入库生成失败'
           }
 
       - name: Build
