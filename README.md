@@ -4,6 +4,16 @@
 
 ![neko player icon](assets/neko-player-icon.png)
 
+## 界面预览
+
+### 初始界面
+
+![neko player 初始界面](assets/screenshots/home.png)
+
+### 视频播放
+
+![neko player 视频播放界面](assets/screenshots/playing.png)
+
 ## 功能
 
 - libmpv Render API 硬件加速播放
