@@ -52,6 +52,8 @@ song.lrc
 
 下载 Release 压缩包后，保持 `neko-player.exe` 与 `libmpv-2.dll` 位于同一目录。
 
+也可以运行 `neko-player-setup-0.1.0.exe` 安装。安装器支持常见音视频格式关联，并会在资源管理器右键菜单中添加“通过 neko player 打开”。
+
 ## 从源码构建
 
 需要 Rust MSVC 工具链和 libmpv 开发包。
@@ -78,6 +80,16 @@ song.lrc
    ```
 
 `build.rs` 会自动把 `libmpv-2.dll` 复制到输出目录。
+
+## 构建安装包
+
+安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)，完成 Release 构建后运行：
+
+```powershell
+iscc installer\neko-player.iss
+```
+
+安装包会生成在 `dist\` 目录。
 
 ## 技术架构
 
