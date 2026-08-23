@@ -1,5 +1,7 @@
 # neko player
 
+[![Build](https://github.com/Yuel25/neko-player/actions/workflows/build.yml/badge.svg)](https://github.com/Yuel25/neko-player/actions/workflows/build.yml)
+
 一款使用 Rust、Slint 和 libmpv 构建的现代 Windows 媒体播放器。
 
 ![neko player icon](assets/neko-player-icon.png)
@@ -52,7 +54,7 @@ song.lrc
 
 下载 Release 压缩包后，保持 `neko-player.exe` 与 `libmpv-2.dll` 位于同一目录。
 
-也可以运行 `neko-player-setup-0.1.0.exe` 安装。安装器支持常见音视频格式关联，并会在资源管理器右键菜单中添加“通过 neko player 打开”。
+也可以运行 `neko-player-setup-0.1.0.exe` 安装。安装器支持常见音视频格式关联，会注册到 Windows「设置 → 默认应用」的候选列表，并会在资源管理器右键菜单中添加“通过 neko player 打开”。
 
 ## 从源码构建
 
@@ -89,7 +91,13 @@ song.lrc
 iscc installer\neko-player.iss
 ```
 
-安装包会生成在 `dist\` 目录。
+安装包会生成在 `dist\` 目录。版本号取自脚本中的 `MyAppVersion` 默认值；GitHub Actions 构建时会自动改用 `Cargo.toml` 中的版本号。
+
+## 持续集成
+
+推送到 `main` 或提交 PR 时，[GitHub Actions](.github/workflows/build.yml) 会自动完成：下载 mpv 开发包、生成 MSVC 导入库、Release 构建、打包 ZIP、编译 Inno Setup 安装包。推送 `v*` tag 时会自动创建 GitHub Release 并上传两个产物。
+
+若在仓库 secrets 中配置 `CERTIFICATE_BASE64`（ Authenticode 证书 PFX 的 base64）和 `CERTIFICATE_PASSWORD`，CI 会自动用 signtool 对主程序和安装包做代码签名；未配置时自动跳过。
 
 ## 技术架构
 

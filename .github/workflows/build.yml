@@ -1,0 +1,121 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # third_party/mpv 不入库，从上游 mpv-winbuild 的最新 release 拉取开发包。
+      # 如需固定 mpv 版本以保证可复现构建，给 `gh release download` 加 `--tag <tag>`。
+      - name: Download libmpv dev package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R zhongfly/mpv-winbuild --pattern 'mpv-dev-x86_64-*.7z' --dir .
+          $archive = Get-ChildItem -Filter 'mpv-dev-x86_64-*.7z' | Sort-Object Name | Select-Object -Last 1
+          7z x $archive.Name '-y' '-othird_party/mpv' | Out-Null
+          Get-ChildItem third_party/mpv
+
+      - name: Generate MSVC import library
+        shell: pwsh
+        run: |
+          # 包内 DLL 已是 libmpv-2.dll；以防万一处理旧命名
+          if (-not (Test-Path third_party/mpv/libmpv-2.dll) -and (Test-Path third_party/mpv/mpv-2.dll)) {
+            Move-Item third_party/mpv/mpv-2.dll third_party/mpv/libmpv-2.dll
+          }
+          if (-not (Test-Path third_party/mpv/libmpv-2.lib)) {
+            $def = (Get-ChildItem third_party/mpv -Filter '*.def' | Select-Object -First 1).FullName
+            lib "/def:$def" /name:libmpv-2.dll /out:third_party/mpv/libmpv-2.lib /machine:x64
+          }
+
+      - name: Build
+        run: cargo build --release
+
+      # 可选代码签名：配置仓库 secrets CERTIFICATE_BASE64（PFX 的 base64）
+      # 和 CERTIFICATE_PASSWORD 后，CI 会自动用 signtool 签名主程序和安装包。
+      # 未配置时此步骤跳过，不影响构建。
+      - name: Sign neko-player.exe
+        shell: pwsh
+        run: |
+          if ('${{ secrets.CERTIFICATE_BASE64 }}' -eq '' -or '${{ secrets.CERTIFICATE_PASSWORD }}' -eq '') {
+            Write-Host '::notice::未配置签名证书 secrets，跳过代码签名。'
+            exit 0
+          }
+          [IO.File]::WriteAllBytes("$PWD\cert.pfx", [Convert]::FromBase64String('${{ secrets.CERTIFICATE_BASE64 }}'))
+          $signtool = (Get-ChildItem '${env:ProgramFiles(x86)}\Windows Kits\10\bin' -Recurse -Filter signtool.exe |
+            Where-Object FullName -Match '\\x64\\' | Sort-Object FullName | Select-Object -Last 1).FullName
+          & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            /f cert.pfx /p '${{ secrets.CERTIFICATE_PASSWORD }}' target\release\neko-player.exe
+
+      - name: Package ZIP
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          "VERSION=$version" | Add-Content $env:GITHUB_ENV
+          Compress-Archive -Path target\release\neko-player.exe, target\release\libmpv-2.dll `
+            -DestinationPath "neko-player-v$version-windows-x64.zip"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DMyAppVersion=$env:VERSION" installer\neko-player.iss
+          Get-ChildItem dist
+
+      - name: Sign installer
+        shell: pwsh
+        run: |
+          if (-not (Test-Path cert.pfx)) {
+            Write-Host '::notice::未配置签名证书 secrets，跳过代码签名。'
+            exit 0
+          }
+          $signtool = (Get-ChildItem '${env:ProgramFiles(x86)}\Windows Kits\10\bin' -Recurse -Filter signtool.exe |
+            Where-Object FullName -Match '\\x64\\' | Sort-Object FullName | Select-Object -Last 1).FullName
+          & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            /f cert.pfx /p '${{ secrets.CERTIFICATE_PASSWORD }}' "dist\neko-player-setup-$env:VERSION.exe"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: neko-player-windows-x64
+          path: |
+            neko-player-v*-windows-x64.zip
+            dist/neko-player-setup-*.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME --generate-notes --latest `
+            "neko-player-v$env:VERSION-windows-x64.zip" `
+            "dist\neko-player-setup-$env:VERSION.exe"

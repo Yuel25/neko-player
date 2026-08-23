@@ -1,5 +1,8 @@
 ﻿#define MyAppName "neko player"
+; CI 会用 /DMyAppVersion=<Cargo.toml 版本> 覆盖；本地手动编译时使用此默认值
+#ifndef MyAppVersion
 #define MyAppVersion "0.1.0"
+#endif
 #define MyAppExeName "neko-player.exe"
 
 [Setup]
@@ -43,6 +46,11 @@ Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\shell\open\co
 Root: HKCU; Subkey: "Software\Classes\NekoPlayer.Media"; ValueType: string; ValueData: "neko player 媒体文件"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\NekoPlayer.Media\DefaultIcon"; ValueType: string; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKCU; Subkey: "Software\Classes\NekoPlayer.Media\shell\open\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
+; Default Programs Capabilities：让 neko player 出现在
+; Windows「设置 → 应用 → 默认应用」的候选列表中（各扩展名的映射在 extension.iss 中注册）
+Root: HKCU; Subkey: "Software\Neko Player\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "{#MyAppName}"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Neko Player\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "基于 libmpv 与 Slint 的现代 Windows 媒体播放器"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "neko player"; ValueData: "Software\Neko Player\Capabilities"; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\video\shell\NekoPlayer"; ValueType: string; ValueData: "通过 neko player 打开"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\video\shell\NekoPlayer"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\video\shell\NekoPlayer\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
