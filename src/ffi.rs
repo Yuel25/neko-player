@@ -27,6 +27,13 @@ pub const MPV_EVENT_LOG_MESSAGE: c_int = 2;
 pub const MPV_EVENT_START_FILE: c_int = 6;
 pub const MPV_EVENT_END_FILE: c_int = 7;
 pub const MPV_EVENT_FILE_LOADED: c_int = 8;
+
+// ---- mpv_end_file_reason ----
+pub const MPV_END_FILE_REASON_EOF: c_int = 0;
+pub const MPV_END_FILE_REASON_STOP: c_int = 2;
+pub const MPV_END_FILE_REASON_QUIT: c_int = 3;
+pub const MPV_END_FILE_REASON_ERROR: c_int = 4;
+pub const MPV_END_FILE_REASON_REDIRECT: c_int = 5;
 pub const MPV_EVENT_VIDEO_RECONFIG: c_int = 17;
 pub const MPV_EVENT_SEEK: c_int = 20;
 pub const MPV_EVENT_PLAYBACK_RESTART: c_int = 21;
@@ -56,6 +63,15 @@ pub struct mpv_event_property {
     pub name: *const c_char,
     pub format: c_int,
     pub data: *mut c_void,
+}
+
+#[repr(C)]
+pub struct mpv_event_end_file {
+    pub reason: c_int,
+    pub error: c_int,
+    pub playlist_entry_id: i64,
+    pub playlist_insert_id: c_int,
+    pub playlist_insert_num_entries: c_int,
 }
 
 #[repr(C)]

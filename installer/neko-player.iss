@@ -1,7 +1,7 @@
-﻿#define MyAppName "neko player"
+#define MyAppName "neko player"
 ; CI 会用 /DMyAppVersion=<Cargo.toml 版本> 覆盖；本地手动编译时使用此默认值
 #ifndef MyAppVersion
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "1.0.0"
 #endif
 #define MyAppExeName "neko-player.exe"
 

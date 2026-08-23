@@ -73,7 +73,7 @@ impl VideoRenderer {
         gl: glow::Context,
         player: Arc<MpvPlayer>,
         on_frame_ready: impl Fn() + Send + 'static,
-    ) -> VideoRenderer {
+    ) -> Result<VideoRenderer, String> {
         let (textures, fbos) = unsafe { create_targets(&gl, DEFAULT_SIZE) };
 
         let api_type = b"opengl\0";
@@ -100,7 +100,9 @@ impl VideoRenderer {
         let err = unsafe {
             ffi::mpv_render_context_create(&mut rc, player.handle(), params.as_mut_ptr())
         };
-        assert!(err >= 0, "mpv_render_context_create failed: {}", err);
+        if err < 0 {
+            return Err(format!("mpv_render_context_create failed: {err}"));
+        }
         eprintln!("[neko] mpv render context created");
 
         // Called by mpv when a new frame is ready; must not call mpv APIs.
@@ -124,7 +126,7 @@ impl VideoRenderer {
         };
         r.clear_black(0);
         r.clear_black(1);
-        r
+        Ok(r)
     }
 
     fn clear_black(&self, idx: usize) {

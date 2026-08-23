@@ -17,8 +17,9 @@ pub struct TrackInfo {
     pub label: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TrackKind {
+    #[default]
     Audio,
     Video,
     Subtitle,
@@ -32,6 +33,52 @@ impl TrackKind {
             "sub" => Some(TrackKind::Subtitle),
             _ => None,
         }
+    }
+}
+
+/// One entry of the app-managed playlist. mpv itself always plays a single
+/// file (`loadfile` replace); advancing, looping and shuffling are ours.
+#[derive(Clone, Debug)]
+pub struct PlaylistEntry {
+    pub path: std::path::PathBuf,
+    pub title: String,
+}
+
+/// Playback order for the app-managed playlist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LoopMode {
+    #[default]
+    Sequential,
+    RepeatAll,
+    RepeatOne,
+    Shuffle,
+}
+
+impl LoopMode {
+    pub fn from_u8(v: u8) -> LoopMode {
+        match v {
+            1 => LoopMode::RepeatAll,
+            2 => LoopMode::RepeatOne,
+            3 => LoopMode::Shuffle,
+            _ => LoopMode::Sequential,
+        }
+    }
+
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LoopMode::Sequential => "顺序播放",
+            LoopMode::RepeatAll => "列表循环",
+            LoopMode::RepeatOne => "单曲循环",
+            LoopMode::Shuffle => "随机播放",
+        }
+    }
+
+    pub fn cycle(self) -> LoopMode {
+        LoopMode::from_u8((self.as_u8() + 1) % 4)
     }
 }
 
@@ -49,9 +96,28 @@ pub struct State {
     pub speed: f64,
     pub tracks: Vec<TrackInfo>,
     pub lyric: String,
-    lyrics: Vec<(f64, String)>,
-    video_w: i64,
-    video_h: i64,
+    pub playlist: Vec<PlaylistEntry>,
+    pub current_index: Option<usize>,
+    pub loop_mode: LoopMode,
+    /// Path of the media currently loaded / being loaded.
+    pub media_path: Option<std::path::PathBuf>,
+    pub lyrics: Vec<(f64, String)>,
+    pub video_w: i64,
+    pub video_h: i64,
+    /// Set when the playlist contents / current index / loop mode changed and
+    /// the UI model needs a rebuild; cleared by take_playlist_dirty().
+    playlist_dirty: bool,
+    /// Set on MPV_EVENT_FILE_LOADED; consumed via take_file_loaded().
+    file_loaded_flag: bool,
+    /// keep-open=yes pauses at the last frame instead of ending the file, so
+    /// auto-advance is driven by this property instead of END_FILE events.
+    /// Latched true and manually cleared once handled.
+    eof_reached: bool,
+    /// Set when END_FILE reports MPV_END_FILE_REASON_ERROR (unloadable file).
+    load_failed: bool,
+    /// Consecutive auto-advances that happened without playback ever passing
+    /// 3 seconds; guards against a playlist of broken files looping forever.
+    instant_advances: u32,
 }
 
 pub struct MpvPlayer {
@@ -71,7 +137,11 @@ pub struct MpvPlayer {
 unsafe impl Send for MpvPlayer {}
 unsafe impl Sync for MpvPlayer {}
 
-fn err_str(code: c_int) -> String {
+/// Hard cap for mpv `volume-max` and UI volume controls. 0-100 is the normal
+/// range; above 100 mpv applies software amplification.
+pub const VOLUME_MAX: f64 = 200.0;
+
+pub(crate) fn err_str(code: c_int) -> String {
     unsafe {
         let s = ffi::mpv_error_string(code);
         if s.is_null() {
@@ -90,11 +160,15 @@ impl MpvPlayer {
 
             // vo=libmpv routes all video through the render API — without
             // it mpv briefly opens its own native player window at loadfile.
+            let volume_max = VOLUME_MAX.to_string();
             for (k, v) in [
                 ("vo", "libmpv"),
                 ("keep-open", "yes"),
                 ("hwdec", "auto-copy"),
                 ("force-window", "no"),
+                // Volume boost headroom (0-100% is the slider's normal range,
+                // above that software amplification kicks in).
+                ("volume-max", volume_max.as_str()),
                 // Load same-name and reasonably matching external subtitle
                 // files, and keep the selected subtitle track visible.
                 ("sub-auto", "fuzzy"),
@@ -132,6 +206,7 @@ impl MpvPlayer {
                 (9, "mute", ffi::MPV_FORMAT_FLAG),
                 (10, "speed", ffi::MPV_FORMAT_DOUBLE),
                 (11, "track-list", ffi::MPV_FORMAT_NODE),
+                (12, "eof-reached", ffi::MPV_FORMAT_FLAG),
             ] {
                 player.observe(id, name, format);
             }
@@ -202,6 +277,7 @@ impl MpvPlayer {
             let mut state = self.state.lock().unwrap();
             state.lyrics = lyrics;
             state.lyric.clear();
+            state.media_path = Some(path.to_path_buf());
         }
         if self.rc_ready.load(Ordering::SeqCst) {
             self.load_file_now(path);
@@ -255,6 +331,217 @@ impl MpvPlayer {
         self.command(&format!("no-osd screenshot-to-file \"{path}\" video"));
     }
 
+    // ---- playlist ----
+
+    /// Restore a saved playlist on startup without starting playback.
+    pub fn init_playlist(&self, paths: Vec<std::path::PathBuf>) {
+        let mut state = self.state.lock().unwrap();
+        state.playlist = paths.into_iter().map(entry_of).collect();
+        state.current_index = None;
+        state.playlist_dirty = true;
+    }
+
+    /// Replace the playlist with `paths` and start playing the first entry.
+    pub fn play_files(&self, paths: &[std::path::PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        {
+            let mut state = self.state.lock().unwrap();
+            state.playlist = paths.iter().map(|p| entry_of(p.clone())).collect();
+            state.current_index = None;
+            state.playlist_dirty = true;
+        }
+        self.play_index(0);
+    }
+
+    /// Append to the playlist. If nothing is playing, the first newly
+    /// added entry starts playing.
+    pub fn add_files(&self, paths: &[std::path::PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let play_added = {
+            let mut state = self.state.lock().unwrap();
+            let start = state.playlist.len();
+            state
+                .playlist
+                .extend(paths.iter().map(|p| entry_of(p.clone())));
+            state.playlist_dirty = true;
+            state.current_index.is_none().then_some(start)
+        };
+        if let Some(index) = play_added {
+            self.play_index(index);
+        }
+    }
+
+    /// Drop semantics: an empty playlist is replaced by the dropped files and
+    /// starts playing; a non-empty one has them appended at the end.
+    pub fn drop_files(&self, paths: &[std::path::PathBuf]) {
+        let empty = self.state.lock().unwrap().playlist.is_empty();
+        if empty {
+            self.play_files(paths);
+        } else {
+            self.add_files(paths);
+        }
+    }
+
+    pub fn play_index(&self, index: usize) {
+        let path = {
+            let mut state = self.state.lock().unwrap();
+            if index >= state.playlist.len() {
+                return;
+            }
+            state.current_index = Some(index);
+            state.playlist[index].path.clone()
+        };
+        self.load_file(&path);
+        // Selecting a track always starts it playing, even if the previous
+        // one was paused at its end (keep-open leaves `pause` set).
+        self.command("set pause no");
+    }
+
+    pub fn skip_next(&self) {
+        let (len, cur, mode) = {
+            let state = self.state.lock().unwrap();
+            (state.playlist.len(), state.current_index, state.loop_mode)
+        };
+        let Some(cur) = cur else { return };
+        if let Some(next) = manual_next_index(len, cur, mode) {
+            if next == cur {
+                self.replay();
+            } else {
+                self.play_index(next);
+            }
+        }
+    }
+
+    pub fn skip_prev(&self) {
+        let (len, cur, mode) = {
+            let state = self.state.lock().unwrap();
+            (state.playlist.len(), state.current_index, state.loop_mode)
+        };
+        let Some(cur) = cur else { return };
+        // Restart the current file first, only then go to the previous one.
+        if self.state.lock().unwrap().position > 3.0 {
+            self.command("no-osd seek 0 absolute");
+            return;
+        }
+        let prev = match mode {
+            LoopMode::RepeatAll => (cur + len - 1) % len,
+            _ => cur.saturating_sub(1),
+        };
+        self.play_index(prev);
+    }
+
+    pub fn remove_index(&self, index: usize) {
+        enum FollowUp {
+            Nothing,
+            Play(usize),
+            Stop,
+        }
+        let follow_up = {
+            let mut state = self.state.lock().unwrap();
+            if index >= state.playlist.len() {
+                return;
+            }
+            state.playlist.remove(index);
+            state.playlist_dirty = true;
+            match state.current_index {
+                Some(i) if i > index => {
+                    state.current_index = Some(i - 1);
+                    FollowUp::Nothing
+                }
+                Some(i) if i == index => {
+                    state.current_index = None;
+                    if state.playlist.is_empty() {
+                        FollowUp::Stop
+                    } else {
+                        FollowUp::Play(index.min(state.playlist.len() - 1))
+                    }
+                }
+                _ => FollowUp::Nothing,
+            }
+        };
+        match follow_up {
+            FollowUp::Nothing => {}
+            FollowUp::Play(next) => self.play_index(next),
+            FollowUp::Stop => self.stop_playback(),
+        }
+    }
+
+    pub fn clear_playlist(&self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.playlist.clear();
+            state.current_index = None;
+            state.playlist_dirty = true;
+        }
+        self.stop_playback();
+    }
+
+    pub fn cycle_loop_mode(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.loop_mode = state.loop_mode.cycle();
+    }
+
+    pub fn set_loop_mode(&self, mode: LoopMode) {
+        let mut state = self.state.lock().unwrap();
+        state.loop_mode = mode;
+    }
+
+    pub fn take_playlist_dirty(&self) -> bool {
+        let mut state = self.state.lock().unwrap();
+        std::mem::take(&mut state.playlist_dirty)
+    }
+
+    /// Path of the file that finished loading most recently (set on
+    /// FILE_LOADED), if the UI has not consumed it yet.
+    pub fn take_file_loaded(&self) -> Option<std::path::PathBuf> {
+        let mut state = self.state.lock().unwrap();
+        if state.file_loaded_flag {
+            state.file_loaded_flag = false;
+            state.media_path.clone()
+        } else {
+            None
+        }
+    }
+
+    fn stop_playback(&self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.title.clear();
+            state.lyric.clear();
+            state.lyrics.clear();
+            state.position = 0.0;
+            state.duration = 0.0;
+        }
+        self.command("stop");
+    }
+
+    fn replay(&self) {
+        self.command("no-osd seek 0 absolute");
+        self.command("set pause no");
+    }
+
+    /// Advance to the next entry after the current one naturally ended
+    /// (eof-reached) or failed to load. Called at the end of drain_events.
+    fn advance_after_end(&self) {
+        let (len, cur, mode) = {
+            let state = self.state.lock().unwrap();
+            (state.playlist.len(), state.current_index, state.loop_mode)
+        };
+        let Some(cur) = cur else { return };
+        let Some(next) = auto_next_index(len, cur, mode) else {
+            return; // sequential run finished; stay paused on the last frame
+        };
+        if next == cur {
+            self.replay();
+        } else {
+            self.play_index(next);
+        }
+    }
+
     fn set_property(&self, name: &str, value: &str) {
         let ck = CString::new(name).unwrap();
         let cv = CString::new(value).unwrap();
@@ -265,7 +552,7 @@ impl MpvPlayer {
     }
 
     pub fn set_volume(&self, vol: f64) {
-        self.set_property("volume", &format!("{:.1}", vol.clamp(0.0, 100.0)));
+        self.set_property("volume", &format!("{:.1}", vol.clamp(0.0, VOLUME_MAX)));
     }
 
     pub fn volume_by(&self, delta: f64) {
@@ -344,6 +631,9 @@ impl MpvPlayer {
                             ("time-pos", ffi::MPV_FORMAT_DOUBLE, p) if !p.is_null() => {
                                 st.position = *(p as *const f64);
                                 st.lyric = lyric_at(&st.lyrics, st.position).unwrap_or_default();
+                                if st.position > 3.0 {
+                                    st.instant_advances = 0;
+                                }
                             }
                             ("duration", ffi::MPV_FORMAT_DOUBLE, p) if !p.is_null() => {
                                 st.duration = *(p as *const f64);
@@ -379,6 +669,11 @@ impl MpvPlayer {
                                 st.tracks =
                                     node_parsing::parse_track_list(&*(p as *const ffi::mpv_node));
                             }
+                            ("eof-reached", ffi::MPV_FORMAT_FLAG, p) if !p.is_null() => {
+                                if *(p as *const c_int) != 0 {
+                                    st.eof_reached = true;
+                                }
+                            }
                             ("media-title", ffi::MPV_FORMAT_STRING, p) if !p.is_null() => {
                                 let p = p as *const *const c_char;
                                 if !(*p).is_null() {
@@ -390,6 +685,7 @@ impl MpvPlayer {
                     }
                     ffi::MPV_EVENT_FILE_LOADED => {
                         eprintln!("[neko] file loaded");
+                        self.state.lock().unwrap().file_loaded_flag = true;
                         // Some property changes race ahead of our observer;
                         // actively query the video size on load as well.
                         let w = self.get_i64("width");
@@ -404,6 +700,18 @@ impl MpvPlayer {
                             st.video_w = w;
                             st.video_h = h;
                             self.sync_video_size(&mut st);
+                        }
+                    }
+                    ffi::MPV_EVENT_END_FILE => {
+                        if !ev.data.is_null() {
+                            let end = &*(ev.data as *const ffi::mpv_event_end_file);
+                            if end.reason == ffi::MPV_END_FILE_REASON_ERROR {
+                                eprintln!(
+                                    "[neko] loading failed ({}), skipping",
+                                    err_str(end.error)
+                                );
+                                self.state.lock().unwrap().load_failed = true;
+                            }
                         }
                     }
                     ffi::MPV_EVENT_LOG_MESSAGE => {
@@ -426,6 +734,34 @@ impl MpvPlayer {
                     _ => {}
                 }
             }
+        }
+
+        // keep-open pauses at the last frame instead of ending the file, so
+        // eof-reached / load errors (not END_FILE) drive auto-advance. Both
+        // flags are latched in the property/event handlers above and consumed
+        // here exactly once.
+        let advance = {
+            let mut st = self.state.lock().unwrap();
+            let failed = std::mem::take(&mut st.load_failed);
+            let eof = std::mem::take(&mut st.eof_reached);
+            if st.current_index.is_none() {
+                false
+            } else if failed {
+                // A chain of unloadable files would advance forever; stop
+                // after the whole playlist failed to even start playing.
+                if st.instant_advances > st.playlist.len() as u32 + 2 {
+                    eprintln!("[neko] too many consecutive load failures; auto-advance suspended");
+                    false
+                } else {
+                    st.instant_advances += 1;
+                    true
+                }
+            } else {
+                eof
+            }
+        };
+        if advance {
+            self.advance_after_end();
         }
     }
 
@@ -585,6 +921,99 @@ fn decode_legacy_lrc(bytes: &[u8]) -> String {
 fn lyric_at(entries: &[(f64, String)], position: f64) -> Option<String> {
     let index = entries.partition_point(|(time, _)| *time <= position);
     index.checked_sub(1).map(|i| entries[i].1.clone())
+}
+
+fn entry_of(path: std::path::PathBuf) -> PlaylistEntry {
+    let title = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    PlaylistEntry { path, title }
+}
+
+/// Next index when the current file ended on its own. `RepeatOne` replays
+/// the same entry; callers detect `Some(cur)` and replay via seek.
+fn auto_next_index(len: usize, cur: usize, mode: LoopMode) -> Option<usize> {
+    match mode {
+        LoopMode::RepeatOne => Some(cur),
+        LoopMode::Sequential => (cur + 1 < len).then_some(cur + 1),
+        LoopMode::RepeatAll => (len > 0).then(|| (cur + 1) % len),
+        LoopMode::Shuffle => (len > 0).then(|| shuffle_other(len, cur)),
+    }
+}
+
+/// Next index for the manual "next" button. `RepeatOne` behaves like
+/// sequential (manual skips should leave the entry), and shuffle picks a
+/// random *other* entry.
+fn manual_next_index(len: usize, cur: usize, mode: LoopMode) -> Option<usize> {
+    match mode {
+        LoopMode::RepeatOne => (cur + 1 < len).then_some(cur + 1),
+        LoopMode::Sequential => (cur + 1 < len).then_some(cur + 1),
+        LoopMode::RepeatAll => (len > 0).then(|| (cur + 1) % len),
+        LoopMode::Shuffle => (len > 0).then(|| shuffle_other(len, cur)),
+    }
+}
+
+/// Uniform index in `0..len` that is not `cur` (returns `cur` for len <= 1).
+fn shuffle_other(len: usize, cur: usize) -> usize {
+    if len <= 1 {
+        return cur;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.subsec_nanos() as u64) ^ (d.as_secs() << 17))
+        .unwrap_or(0x9E37_79B9_7F4A_7C15);
+    let mut state = nanos | 1;
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    (cur + 1 + (state as usize % (len - 1))) % len
+}
+
+#[cfg(test)]
+mod playlist_tests {
+    use super::*;
+
+    #[test]
+    fn auto_advance_follows_loop_mode() {
+        use LoopMode::*;
+        assert_eq!(auto_next_index(3, 0, Sequential), Some(1));
+        assert_eq!(auto_next_index(3, 2, Sequential), None);
+        assert_eq!(auto_next_index(3, 2, RepeatAll), Some(0));
+        assert_eq!(auto_next_index(1, 0, RepeatAll), Some(0));
+        assert_eq!(auto_next_index(3, 1, RepeatOne), Some(1));
+    }
+
+    #[test]
+    fn manual_next_leaves_repeat_one() {
+        use LoopMode::*;
+        assert_eq!(manual_next_index(3, 1, RepeatOne), Some(2));
+        assert_eq!(manual_next_index(3, 2, RepeatOne), None);
+        assert_eq!(manual_next_index(3, 2, Sequential), None);
+        assert_eq!(manual_next_index(3, 2, RepeatAll), Some(0));
+    }
+
+    #[test]
+    fn shuffle_never_picks_current() {
+        for _ in 0..64 {
+            let next = shuffle_other(5, 2);
+            assert!((0..5).contains(&next) && next != 2);
+        }
+        assert_eq!(shuffle_other(1, 0), 0);
+    }
+
+    #[test]
+    fn loop_mode_roundtrip() {
+        let mut mode = LoopMode::Sequential;
+        for _ in 0..4 {
+            mode = mode.cycle();
+        }
+        assert_eq!(mode, LoopMode::Sequential);
+        assert_eq!(
+            LoopMode::from_u8(LoopMode::Shuffle.as_u8()),
+            LoopMode::Shuffle
+        );
+    }
 }
 
 #[cfg(test)]

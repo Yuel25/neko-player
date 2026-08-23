@@ -2910,11 +2910,13 @@ dependencies = [
 
 [[package]]
 name = "neko-player"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "glow 0.14.2",
  "raw-window-handle",
  "rfd",
+ "serde",
+ "serde_json",
  "slint",
  "slint-build",
 ]

@@ -1,5 +1,7 @@
 # neko player
 
+[简体中文](README.md) | [English](README_EN.md)
+
 [![Build](https://github.com/Yuel25/neko-player/actions/workflows/build.yml/badge.svg)](https://github.com/Yuel25/neko-player/actions/workflows/build.yml)
 
 一款使用 Rust、Slint 和 libmpv 构建的现代 Windows 媒体播放器。
@@ -19,14 +21,19 @@
 ## 功能
 
 - libmpv Render API 硬件加速播放
-- 拖拽文件到窗口任意位置即可播放，播放中拖入可替换当前媒体
+- 播放列表:拖入 / 添加多个文件、点击切歌、单曲移除,支持顺序播放 / 列表循环 / 单曲循环 / 随机播放,播完自动连播
+- 记住音量、静音、倍速、循环模式、播放列表与窗口位置;再次打开同一文件时提示从上次位置继续
+- 拖拽文件到窗口任意位置即可播放：列表为空时直接播放拖入的文件,已有列表时追加到列表尾部
 - 无边框深色界面、Windows 11 圆角窗口与 macOS 风格窗口按钮
-- 播放、暂停、进度拖动与前后 10 秒跳转
+- 播放、暂停、进度拖动与前后 10 秒跳转,上一曲超过 3 秒先回到开头
+- 进度条悬停缩略图预览,显示对应时间画面(按时间分桶缓存,异步生成)
 - `-1` / `+1` 逐帧查看
-- 音量、静音、倍速、音轨和字幕轨切换
-- 同名 LRC 歌词同步，支持 UTF-8、UTF-16、CP932 和 CP936
+- 音量调节、静音、倍速、音轨和字幕轨切换,音量最高可放大到 200%(滑条超过 100% 时变为琥珀色)
+- 同名 LRC 歌词同步,支持 UTF-8、UTF-16、CP932 和 CP936
 - 当前视频帧保存为 PNG
 - 全屏、快捷键和自动隐藏控制栏
+
+配置保存在 `%APPDATA%\neko-player\config.json`,删除该文件即可重置全部记忆状态。
 
 ## 快捷键
 
@@ -35,6 +42,8 @@
 | `Space` | 播放 / 暂停 |
 | `←` / `→` | 后退 / 前进 5 秒 |
 | `↑` / `↓` | 调节音量 |
+| `N` / `P` | 下一曲 / 上一曲 |
+| `L` | 显示 / 隐藏播放列表 |
 | `M` | 静音 |
 | `F` | 全屏 |
 | `Esc` | 退出全屏 |
@@ -55,7 +64,7 @@ song.lrc
 
 下载 Release 压缩包后，保持 `neko-player.exe` 与 `libmpv-2.dll` 位于同一目录。
 
-也可以运行 `neko-player-setup-0.2.0.exe` 安装。安装器支持常见音视频格式关联，会注册到 Windows「设置 → 默认应用」的候选列表，并会在资源管理器右键菜单中添加“通过 neko player 打开”。
+也可以运行 `neko-player-setup-1.0.0.exe` 安装。安装器支持常见音视频格式关联，会注册到 Windows「设置 → 默认应用」的候选列表，并会在资源管理器右键菜单中添加“通过 neko player 打开”。
 
 ## 从源码构建
 
@@ -107,3 +116,7 @@ iscc installer\neko-player.iss
 - libmpv client/render API
 - glow OpenGL ES
 - Win32 无边框窗口集成
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。第三方依赖仍遵循其各自的许可证。

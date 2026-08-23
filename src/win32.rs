@@ -61,7 +61,58 @@ extern "system" {
     ) -> c_int;
     fn ReleaseCapture() -> c_int;
     fn SendMessageW(hWnd: HWND, Msg: c_uint, wParam: usize, lParam: isize) -> isize;
+    fn GetWindowPlacement(hWnd: HWND, lpwndpl: *mut WINDOWPLACEMENT) -> c_int;
+    fn ShowWindow(hWnd: HWND, nCmdShow: c_int) -> c_int;
+    fn MonitorFromPoint(pt: POINT, dwFlags: c_uint) -> HWND;
+    fn MessageBoxW(hWnd: HWND, lpText: *const u16, lpCaption: *const u16, uType: c_uint) -> c_int;
 }
+
+pub fn show_error(message: &str) {
+    const MB_OK: c_uint = 0;
+    const MB_ICONERROR: c_uint = 0x10;
+    let text: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = "neko player - 图形初始化失败"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct POINT {
+    pub x: c_int,
+    pub y: c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RECT {
+    pub left: c_int,
+    pub top: c_int,
+    pub right: c_int,
+    pub bottom: c_int,
+}
+
+#[repr(C)]
+pub struct WINDOWPLACEMENT {
+    pub length: c_uint,
+    pub flags: c_uint,
+    pub showCmd: c_uint,
+    pub ptMinPosition: POINT,
+    pub ptMaxPosition: POINT,
+    pub rcNormalPosition: RECT,
+}
+
+const SW_MAXIMIZE: c_int = 3;
+const SW_SHOWMAXIMIZED: c_uint = 3;
+const MONITOR_DEFAULTTONULL: c_uint = 0;
 
 #[link(name = "dwmapi")]
 extern "system" {
@@ -76,7 +127,8 @@ extern "system" {
 #[link(name = "shell32")]
 extern "system" {
     fn DragAcceptFiles(hWnd: HWND, fAccept: c_int);
-    fn DragQueryFileW(hDrop: *mut c_void, iFile: c_uint, lpszFile: *mut u16, cch: c_uint) -> c_uint;
+    fn DragQueryFileW(hDrop: *mut c_void, iFile: c_uint, lpszFile: *mut u16, cch: c_uint)
+        -> c_uint;
     fn DragFinish(hDrop: *mut c_void);
 }
 
@@ -153,6 +205,77 @@ pub fn begin_system_drag(hwnd: HWND) {
     unsafe {
         ReleaseCapture();
         SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+    }
+}
+
+/// Restorable window rectangle (the normal position even while maximized).
+#[derive(Clone, Copy, Debug)]
+pub struct SavedRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub maximized: bool,
+}
+
+pub fn save_window_rect(hwnd: HWND) -> Option<SavedRect> {
+    unsafe {
+        let mut pl = WINDOWPLACEMENT {
+            length: std::mem::size_of::<WINDOWPLACEMENT>() as c_uint,
+            flags: 0,
+            showCmd: 0,
+            ptMinPosition: POINT { x: 0, y: 0 },
+            ptMaxPosition: POINT { x: 0, y: 0 },
+            rcNormalPosition: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+        };
+        if GetWindowPlacement(hwnd, &mut pl) == 0 {
+            return None;
+        }
+        let r = pl.rcNormalPosition;
+        // rcNormalPosition can be degenerate for never-shown windows.
+        if r.right <= r.left || r.bottom <= r.top {
+            return None;
+        }
+        Some(SavedRect {
+            x: r.left,
+            y: r.top,
+            w: r.right - r.left,
+            h: r.bottom - r.top,
+            maximized: pl.showCmd == SW_SHOWMAXIMIZED,
+        })
+    }
+}
+
+/// Apply a saved placement. Skipped entirely when the saved center no longer
+/// intersects any monitor (e.g. an unplugged second screen).
+pub fn restore_window_rect(hwnd: HWND, rect: SavedRect) -> bool {
+    unsafe {
+        let center = POINT {
+            x: rect.x + rect.w / 2,
+            y: rect.y + rect.h / 2,
+        };
+        if MonitorFromPoint(center, MONITOR_DEFAULTTONULL).is_null() {
+            eprintln!("[neko] saved window position is off-screen; ignoring");
+            return false;
+        }
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        if rect.maximized {
+            ShowWindow(hwnd, SW_MAXIMIZE);
+        }
+        true
     }
 }
 
