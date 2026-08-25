@@ -252,7 +252,9 @@ export component MainWindow inherits Window {
 
     Rectangle {
         x: root.fullscreen ? 22px : 18px; width: root.width - 2 * self.x; y: root.height - self.height - (root.fullscreen ? 18px : 16px); height: 88px;
-        border-radius: 14px; opacity: root.controls-visible ? 1.0 : 0.0; animate opacity { duration: 180ms; easing: ease-out; }
+        // `visible` also removes child hit targets; opacity alone leaves invisible controls clickable.
+        visible: root.controls-visible;
+        border-radius: 14px;
         background: #17171eea; border-width: 1px; border-color: #ffffff12; drop-shadow-color: #00000070; drop-shadow-blur: 22px; drop-shadow-offset-y: 8px;
         bar-touch := TouchArea { changed mouse-x => { root.notify-activity(); } changed mouse-y => { root.notify-activity(); } }
 

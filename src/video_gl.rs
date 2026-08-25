@@ -37,6 +37,10 @@ pub fn install_loader(loader: &dyn Fn(&CStr) -> *const c_void) {
     GET_PROC.with(|slot| *slot.borrow_mut() = Some(extended));
 }
 
+pub fn clear_loader() {
+    GET_PROC.with(|slot| *slot.borrow_mut() = None);
+}
+
 pub fn get_proc(name: &CStr) -> *const c_void {
     GET_PROC.with(|slot| match slot.borrow().as_ref() {
         Some(f) => f(name),
@@ -63,6 +67,7 @@ pub struct VideoRenderer {
     /// Index of the texture currently shown by Slint; mpv renders into the other.
     front: usize,
     rc: *mut ffi::mpv_render_context,
+    update_ctx: *mut c_void,
 }
 
 // The render context must only be used from one thread (the UI/GL thread),
@@ -125,6 +130,7 @@ impl VideoRenderer {
             size: DEFAULT_SIZE,
             front: 0,
             rc,
+            update_ctx: ctx,
         };
         r.clear_black(0);
         r.clear_black(1);
@@ -217,11 +223,12 @@ impl VideoRenderer {
                 },
             ];
             let err = ffi::mpv_render_context_render(self.rc, params.as_mut_ptr());
+            // Always restore Slint's default framebuffer, including error paths.
+            self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             if err < 0 {
                 eprintln!("[neko] mpv_render_context_render failed: {err}");
                 return None;
             }
-            self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         }
 
         self.front = back;
@@ -262,14 +269,17 @@ impl VideoRenderer {
     pub fn teardown(&mut self) {
         unsafe {
             if !self.rc.is_null() {
+                ffi::mpv_render_context_set_update_callback(self.rc, None, std::ptr::null_mut());
                 ffi::mpv_render_context_free(self.rc);
                 self.rc = std::ptr::null_mut();
+                if !self.update_ctx.is_null() {
+                    drop(Box::from_raw(self.update_ctx as *mut Box<dyn Fn() + Send>));
+                    self.update_ctx = std::ptr::null_mut();
+                }
             }
             destroy_targets(&self.gl, &self.textures, &self.fbos);
         }
-        self.player
-            .rc_released_flag()
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.player.mark_render_released();
         eprintln!("[neko] render context released");
     }
 }

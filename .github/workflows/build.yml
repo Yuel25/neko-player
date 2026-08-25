@@ -63,8 +63,17 @@ jobs:
             throw 'libmpv-2.lib 不含 mpv 符号：导入库生成失败'
           }
 
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --all-targets --all-features
+
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
 
       # 可选代码签名：配置仓库 secrets CERTIFICATE_BASE64（PFX 的 base64）
       # 和 CERTIFICATE_PASSWORD 后，CI 会自动用 signtool 签名主程序和安装包。

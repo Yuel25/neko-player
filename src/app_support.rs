@@ -1,4 +1,4 @@
-use crate::{player, settings, win32, MainWindow, PlayItem};
+use crate::{diagnostics, player, settings, win32, MainWindow, PlayItem};
 use player::{MpvPlayer, TrackKind};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::ComponentHandle;
@@ -74,11 +74,16 @@ pub(crate) fn snapshot_and_save(
             });
         }
     }
-    settings_rc.lock().unwrap().save();
-    eprintln!(
-        "[neko] settings saved to {}",
-        settings::Settings::config_path().display()
-    );
+    match settings_rc.lock().unwrap().save() {
+        Ok(()) => eprintln!(
+            "[neko] settings saved to {}",
+            settings::Settings::config_path().display()
+        ),
+        Err(e) => {
+            diagnostics::log("settings", format!("save failed: {e}"));
+            eprintln!("[neko] settings save failed: {e}");
+        }
+    }
 }
 
 pub(crate) fn fmt_time(t: f64) -> slint::SharedString {

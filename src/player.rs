@@ -3,8 +3,8 @@
 use crate::ffi;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Mutex;
 
 /// One entry of mpv's `track-list` property.
 #[derive(Clone, Debug)]
@@ -127,8 +127,11 @@ pub struct MpvPlayer {
     /// Files queued before the render context exists; with vo=libmpv the VO
     /// fatally fails ("No render context set") if a loadfile arrives first.
     pending_file: Mutex<Option<std::path::PathBuf>>,
-    rc_ready: AtomicBool,
-    rc_released: Arc<AtomicBool>,
+    /// Single source of truth for the render-context lifecycle.
+    /// RELEASED -> SETTING_UP -> READY -> SETTING_UP -> RELEASED.
+    render_state: AtomicU8,
+    /// Double-boxed wakeup closure owned until the mpv handle is destroyed.
+    wakeup_ctx: Mutex<*mut c_void>,
     terminated: AtomicBool,
 }
 
@@ -140,6 +143,10 @@ unsafe impl Sync for MpvPlayer {}
 /// Hard cap for mpv `volume-max` and UI volume controls. 0-100 is the normal
 /// range; above 100 mpv applies software amplification.
 pub const VOLUME_MAX: f64 = 200.0;
+
+const RENDER_RELEASED: u8 = 0;
+const RENDER_SETTING_UP: u8 = 1;
+const RENDER_READY: u8 = 2;
 
 pub(crate) fn err_str(code: c_int) -> String {
     unsafe {
@@ -189,8 +196,8 @@ impl MpvPlayer {
                 state: Mutex::new(State::default()),
                 pending_size: Mutex::new(None),
                 pending_file: Mutex::new(None),
-                rc_ready: AtomicBool::new(false),
-                rc_released: Arc::new(AtomicBool::new(false)),
+                render_state: AtomicU8::new(RENDER_RELEASED),
+                wakeup_ctx: Mutex::new(std::ptr::null_mut()),
                 terminated: AtomicBool::new(false),
             };
 
@@ -242,10 +249,15 @@ impl MpvPlayer {
         self.handle
     }
 
-    /// Shared flag set by the render loop when the mpv render context has
-    /// been freed; shutdown() only destroys the handle when it is safe.
-    pub fn rc_released_flag(&self) -> Arc<AtomicBool> {
-        self.rc_released.clone()
+    /// Enter setup/teardown before touching a render context. While in this
+    /// state file loads are deferred and shutdown will not destroy the handle.
+    pub fn mark_render_unavailable(&self) {
+        self.render_state.store(RENDER_SETTING_UP, Ordering::SeqCst);
+    }
+
+    /// Publish that no render context exists and the mpv handle is safe to destroy.
+    pub fn mark_render_released(&self) {
+        self.render_state.store(RENDER_RELEASED, Ordering::SeqCst);
     }
 
     /// Register the wakeup callback. The closure is called on an mpv-internal
@@ -254,6 +266,8 @@ impl MpvPlayer {
     pub fn set_wakeup_handler(&self, f: impl Fn() + Send + 'static) {
         // Double-box: the fat pointer (data + vtable) must live behind a
         // stable thin pointer we can hand to C as an opaque context.
+        let mut owned_ctx = self.wakeup_ctx.lock().unwrap();
+        assert!(owned_ctx.is_null(), "wakeup handler already installed");
         let boxed: Box<dyn Fn() + Send> = Box::new(f);
         let ctx = Box::into_raw(Box::new(boxed)) as *mut c_void;
         unsafe extern "C" fn trampoline(ctx: *mut c_void) {
@@ -261,6 +275,7 @@ impl MpvPlayer {
             f();
         }
         unsafe { ffi::mpv_set_wakeup_callback(self.handle, Some(trampoline), ctx) };
+        *owned_ctx = ctx;
     }
 
     pub fn command(&self, cmd: &str) {
@@ -279,7 +294,7 @@ impl MpvPlayer {
             state.lyric.clear();
             state.media_path = Some(path.to_path_buf());
         }
-        if self.rc_ready.load(Ordering::SeqCst) {
+        if self.render_state.load(Ordering::SeqCst) == RENDER_READY {
             self.load_file_now(path);
         } else {
             eprintln!("[neko] deferring load until render context is up");
@@ -299,7 +314,7 @@ impl MpvPlayer {
     /// Called from RenderingSetup once the mpv render context exists; any
     /// file requested earlier is loaded now.
     pub fn mark_render_ready(&self) {
-        self.rc_ready.store(true, Ordering::SeqCst);
+        self.render_state.store(RENDER_READY, Ordering::SeqCst);
         if let Some(path) = self.pending_file.lock().unwrap().take() {
             self.load_file_now(&path);
         }
@@ -773,8 +788,18 @@ impl MpvPlayer {
         if self.terminated.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.rc_released.load(Ordering::SeqCst) {
-            unsafe { ffi::mpv_terminate_destroy(self.handle) };
+        if self.render_state.load(Ordering::SeqCst) == RENDER_RELEASED {
+            let ctx =
+                std::mem::replace(&mut *self.wakeup_ctx.lock().unwrap(), std::ptr::null_mut());
+            unsafe {
+                // terminate_destroy guarantees no callback can still be running;
+                // reclaim its userdata only after that synchronization point.
+                ffi::mpv_set_wakeup_callback(self.handle, None, std::ptr::null_mut());
+                ffi::mpv_terminate_destroy(self.handle);
+                if !ctx.is_null() {
+                    drop(Box::from_raw(ctx as *mut Box<dyn Fn() + Send>));
+                }
+            }
         } else {
             eprintln!("[neko] render context was not released; leaking mpv handle on exit");
         }

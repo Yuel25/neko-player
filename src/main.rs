@@ -19,6 +19,7 @@ use player::{LoopMode, MpvPlayer, TrackKind};
 use slint::ComponentHandle;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -102,13 +103,21 @@ fn main() {
         let settings_sync = settings_rc.clone();
         let resume_sync = resume_pos.clone();
         let preview_wanted_sync = preview_wanted.clone();
+        let event_sync_scheduled = Arc::new(AtomicBool::new(false));
         player.set_wakeup_handler(move || {
+            if event_sync_scheduled.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            let scheduled = event_sync_scheduled.clone();
             let player = player_handle.clone();
             let weak = weak_handle.clone();
             let settings_rc = settings_sync.clone();
             let resume_pos = resume_sync.clone();
             let preview_wanted_sync = preview_wanted_sync.clone();
-            let _ = slint::invoke_from_event_loop(move || {
+            if slint::invoke_from_event_loop(move || {
+                // Clear before draining: a concurrent wakeup can schedule the
+                // next pass, while bursts before this task remain coalesced.
+                scheduled.store(false, Ordering::Release);
                 player.drain_events();
                 let Some(ui) = weak.upgrade() else { return };
                 let st = player.state.lock().unwrap();
@@ -162,7 +171,11 @@ fn main() {
                     }
                 }
                 ui.window().request_redraw();
-            });
+            })
+            .is_err()
+            {
+                event_sync_scheduled.store(false, Ordering::Release);
+            }
         });
     }
 
@@ -190,6 +203,9 @@ fn main() {
         let _ = ui.window().set_rendering_notifier(move |state, api| {
             match state {
                 slint::RenderingState::RenderingSetup => {
+                    // A graphics context may be recreated during the process lifetime.
+                    // Stop direct file loads until the new mpv render context is ready.
+                    player.mark_render_unavailable();
                     // Strip the system caption but keep the resize frame;
                     // our Slint title bar replaces it.
                     if let Some(ui) = weak.upgrade() {
@@ -253,13 +269,23 @@ fn main() {
 
                     let weak_cb = weak.clone();
                     let player_cb = player.clone();
+                    let redraw_scheduled = Arc::new(AtomicBool::new(false));
                     let renderer = match video_gl::VideoRenderer::new(gl, player_cb, move || {
+                        if redraw_scheduled.swap(true, Ordering::AcqRel) {
+                            return;
+                        }
                         let weak = weak_cb.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
+                        let scheduled = redraw_scheduled.clone();
+                        if slint::invoke_from_event_loop(move || {
+                            scheduled.store(false, Ordering::Release);
                             if let Some(ui) = weak.upgrade() {
                                 ui.window().request_redraw();
                             }
-                        });
+                        })
+                        .is_err()
+                        {
+                            redraw_scheduled.store(false, Ordering::Release);
+                        }
                     }) {
                         Ok(renderer) => renderer,
                         Err(e) => {
@@ -268,6 +294,7 @@ fn main() {
                                 "OpenGL 已初始化，但 libmpv 视频渲染器创建失败。\n音频和界面仍可使用。\n\n错误：{e}\n\n诊断日志：{}",
                                 diagnostics::path().display()
                             ));
+                            player.mark_render_released();
                             return;
                         }
                     };
@@ -291,9 +318,13 @@ fn main() {
                     }
                 }
                 slint::RenderingState::RenderingTeardown => {
+                    player.mark_render_unavailable();
                     if let Some(mut r) = renderer_slot.take() {
                         r.teardown();
+                    } else {
+                        player.mark_render_released();
                     }
+                    video_gl::clear_loader();
                 }
                 _ => {}
             }

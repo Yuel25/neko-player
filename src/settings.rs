@@ -4,7 +4,8 @@
 //! the playlist and per-file playback positions survive restarts.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// Normal (restorable) window rectangle in workspace coordinates, as
 /// reported by GetWindowPlacement. `maximized` is applied on top of it.
@@ -79,34 +80,66 @@ impl Settings {
     }
 
     pub fn load() -> Settings {
-        match std::fs::read(Self::config_path()) {
-            Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("[neko] config parse failed, using defaults: {e}");
-                    Settings::default()
+        let path = Self::config_path();
+        match Self::load_from(&path) {
+            Ok(settings) => settings,
+            Err(primary_error) => {
+                let backup = path.with_extension("json.bak");
+                match Self::load_from(&backup) {
+                    Ok(settings) => {
+                        eprintln!("[neko] config recovery used backup: {primary_error}");
+                        settings
+                    }
+                    Err(_) => {
+                        if path.exists() {
+                            eprintln!("[neko] config load failed, using defaults: {primary_error}");
+                        }
+                        Settings::default()
+                    }
                 }
-            },
-            Err(_) => Settings::default(),
+            }
         }
     }
 
-    pub fn save(&self) {
-        let path = Self::config_path();
-        if let Some(dir) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                eprintln!("[neko] cannot create config dir: {e}");
-                return;
-            }
+    fn load_from(path: &Path) -> Result<Settings, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse {}: {e}", path.display()))
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        self.save_to(&Self::config_path())
+    }
+
+    fn save_to(&self, path: &Path) -> Result<(), String> {
+        let dir = path
+            .parent()
+            .ok_or_else(|| "config path has no parent".to_owned())?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("create config dir: {e}"))?;
+        let bytes =
+            serde_json::to_vec_pretty(self).map_err(|e| format!("serialize config: {e}"))?;
+        let tmp = path.with_extension("json.tmp");
+        let backup = path.with_extension("json.bak");
+
+        let mut file =
+            std::fs::File::create(&tmp).map_err(|e| format!("create temporary config: {e}"))?;
+        file.write_all(&bytes)
+            .map_err(|e| format!("write temporary config: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("flush temporary config: {e}"))?;
+        drop(file);
+
+        let had_config = path.exists();
+        if had_config {
+            let _ = std::fs::remove_file(&backup);
+            std::fs::rename(path, &backup).map_err(|e| format!("backup existing config: {e}"))?;
         }
-        match serde_json::to_vec_pretty(self) {
-            Ok(bytes) => {
-                if let Err(e) = std::fs::write(&path, bytes) {
-                    eprintln!("[neko] cannot write config: {e}");
-                }
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            if had_config {
+                let _ = std::fs::rename(&backup, path);
             }
-            Err(e) => eprintln!("[neko] cannot serialize config: {e}"),
+            return Err(format!("replace config: {e}"));
         }
+        Ok(())
     }
 
     /// Remember the playback position of `path` (most recent at the end).
@@ -166,6 +199,35 @@ mod tests {
         assert_eq!(s.resume_position("b", 100.0), Some(60.0));
         assert_eq!(s.resume_position("c", 100.0), None); // within 20s of end
         assert_eq!(s.resume_position("missing", 100.0), None);
+    }
+
+    #[test]
+    fn atomic_save_replaces_config_and_keeps_backup() {
+        let dir = std::env::temp_dir().join(format!("neko-settings-test-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let first = Settings {
+            volume: 25.0,
+            ..Settings::default()
+        };
+        first.save_to(&path).unwrap();
+        let mut second = first.clone();
+        second.volume = 75.0;
+        second.save_to(&path).unwrap();
+
+        let current: Settings = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let backup: Settings =
+            serde_json::from_slice(&std::fs::read(path.with_extension("json.bak")).unwrap())
+                .unwrap();
+        assert_eq!(current.volume, 75.0);
+        assert_eq!(backup.volume, 25.0);
+        assert!(!path.with_extension("json.tmp").exists());
+
+        std::fs::write(&path, b"{broken").unwrap();
+        let recovered = Settings::load_from(&path.with_extension("json.bak")).unwrap();
+        assert_eq!(recovered.volume, 25.0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
