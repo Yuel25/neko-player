@@ -64,7 +64,7 @@ song.lrc
 
 下载 Release 压缩包后，保持 `neko-player.exe` 与 `libmpv-2.dll` 位于同一目录。
 
-也可以运行 `neko-player-setup-1.0.0.exe` 安装。安装器支持常见音视频格式关联，会注册到 Windows「设置 → 默认应用」的候选列表，并会在资源管理器右键菜单中添加“通过 neko player 打开”。
+也可以运行 `neko-player-setup-1.1.0.exe` 安装。安装器支持常见音视频格式关联，会注册到 Windows「设置 → 默认应用」的候选列表，并会在资源管理器右键菜单中添加“通过 neko player 打开”。
 
 ## 从源码构建
 
