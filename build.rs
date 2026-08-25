@@ -31,6 +31,10 @@ fn main() {
         "cargo:rerun-if-changed={}",
         mpv_dir.join("libmpv-2.lib").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        mpv_dir.join("libmpv-2.dll").display()
+    );
 
     // Copy libmpv-2.dll next to the executable so the app runs without global PATH setup.
     // OUT_DIR = target/<profile>/build/<pkg>-<hash>/out  →  exe dir is 3 levels up.
@@ -42,8 +46,8 @@ fn main() {
 }
 
 fn copy_if_changed(src: &Path, dst: &Path) {
-    let needs_copy = match (src.metadata(), dst.metadata()) {
-        (Ok(s), Ok(d)) => s.len() != d.len(),
+    let needs_copy = match (std::fs::read(src), std::fs::read(dst)) {
+        (Ok(source), Ok(destination)) => source != destination,
         _ => true,
     };
     if needs_copy {
