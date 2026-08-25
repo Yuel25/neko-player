@@ -38,7 +38,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download -R zhongfly/mpv-winbuild --tag $env:MPV_TAG --pattern $env:MPV_ARCHIVE --dir .
+          gh release download $env:MPV_TAG -R zhongfly/mpv-winbuild --pattern $env:MPV_ARCHIVE --dir .
+          if ($LASTEXITCODE -ne 0) { throw "failed to download pinned libmpv archive" }
           $actual = (Get-FileHash $env:MPV_ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $env:MPV_SHA256) { throw "libmpv archive checksum mismatch: $actual" }
           7z x $env:MPV_ARCHIVE '-y' '-othird_party/mpv' | Out-Null
