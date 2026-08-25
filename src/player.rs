@@ -855,13 +855,15 @@ fn load_lrc(media_path: &std::path::Path) -> Vec<(f64, String)> {
 
     let content = if bytes.starts_with(&[0xff, 0xfe]) {
         let utf16: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
+            .chunks(2)
+            .filter(|b| b.len() == 2)
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
             .collect();
         String::from_utf16_lossy(&utf16)
     } else if bytes.starts_with(&[0xfe, 0xff]) {
         let utf16: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
+            .chunks(2)
+            .filter(|b| b.len() == 2)
             .map(|b| u16::from_be_bytes([b[0], b[1]]))
             .collect();
         String::from_utf16_lossy(&utf16)
