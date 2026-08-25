@@ -242,6 +242,25 @@ impl MpvPlayer {
         }
     }
 
+    fn get_string(&self, name: &str) -> Option<String> {
+        let c = CString::new(name).ok()?;
+        let mut value: *mut c_char = std::ptr::null_mut();
+        let result = unsafe {
+            ffi::mpv_get_property(
+                self.handle,
+                c.as_ptr(),
+                ffi::MPV_FORMAT_STRING,
+                &mut value as *mut *mut c_char as *mut c_void,
+            )
+        };
+        if result < 0 || value.is_null() {
+            return None;
+        }
+        let text = unsafe { CStr::from_ptr(value).to_string_lossy().into_owned() };
+        unsafe { ffi::mpv_free(value as *mut c_void) };
+        Some(text)
+    }
+
     fn get_i64(&self, name: &str) -> Option<i64> {
         let c = CString::new(name).unwrap();
         let mut v: i64 = 0;
@@ -715,7 +734,14 @@ impl MpvPlayer {
                     }
                     ffi::MPV_EVENT_FILE_LOADED => {
                         eprintln!("[neko] file loaded");
-                        self.state.lock().unwrap().file_loaded_flag = true;
+                        let loaded_path = self.get_string("path").map(std::path::PathBuf::from);
+                        {
+                            let mut state = self.state.lock().unwrap();
+                            if let Some(path) = loaded_path {
+                                state.media_path = Some(path);
+                            }
+                            state.file_loaded_flag = true;
+                        }
                         // Some property changes race ahead of our observer;
                         // actively query the video size on load as well.
                         let w = self.get_i64("width");

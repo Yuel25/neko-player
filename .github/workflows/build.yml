@@ -75,6 +75,19 @@ jobs:
       - name: Test
         run: cargo test --locked --all-targets --all-features
 
+      - name: Generate thumbnail test media
+        shell: pwsh
+        run: |
+          $ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source
+          & $ffmpeg -y -f lavfi -i "testsrc2=duration=8:size=640x360:rate=24" -c:v libx264 -pix_fmt yuv420p thumb-test.mp4
+
+      - name: Test real thumbnail pipeline
+        shell: pwsh
+        env:
+          NEKO_TEST_MEDIA: ${{ github.workspace }}\thumb-test.mp4
+          NEKO_TEST_DURATION: 8
+        run: cargo test --locked generates_thumbnail_per_request -- --ignored --nocapture
+
       - name: Build
         run: cargo build --release --locked
 
