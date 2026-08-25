@@ -669,10 +669,10 @@ impl MpvPlayer {
                                 st.tracks =
                                     node_parsing::parse_track_list(&*(p as *const ffi::mpv_node));
                             }
-                            ("eof-reached", ffi::MPV_FORMAT_FLAG, p) if !p.is_null() => {
-                                if *(p as *const c_int) != 0 {
-                                    st.eof_reached = true;
-                                }
+                            ("eof-reached", ffi::MPV_FORMAT_FLAG, p)
+                                if !p.is_null() && *(p as *const c_int) != 0 =>
+                            {
+                                st.eof_reached = true;
                             }
                             ("media-title", ffi::MPV_FORMAT_STRING, p) if !p.is_null() => {
                                 let p = p as *const *const c_char;
@@ -702,33 +702,26 @@ impl MpvPlayer {
                             self.sync_video_size(&mut st);
                         }
                     }
-                    ffi::MPV_EVENT_END_FILE => {
-                        if !ev.data.is_null() {
-                            let end = &*(ev.data as *const ffi::mpv_event_end_file);
-                            if end.reason == ffi::MPV_END_FILE_REASON_ERROR {
-                                eprintln!(
-                                    "[neko] loading failed ({}), skipping",
-                                    err_str(end.error)
-                                );
-                                self.state.lock().unwrap().load_failed = true;
-                            }
+                    ffi::MPV_EVENT_END_FILE if !ev.data.is_null() => {
+                        let end = &*(ev.data as *const ffi::mpv_event_end_file);
+                        if end.reason == ffi::MPV_END_FILE_REASON_ERROR {
+                            eprintln!("[neko] loading failed ({}), skipping", err_str(end.error));
+                            self.state.lock().unwrap().load_failed = true;
                         }
                     }
-                    ffi::MPV_EVENT_LOG_MESSAGE => {
-                        if !ev.data.is_null() {
-                            let msg = &*(ev.data as *const ffi::mpv_event_log_message);
-                            let get = |p: *const c_char| {
-                                if p.is_null() {
-                                    String::new()
-                                } else {
-                                    CStr::from_ptr(p).to_string_lossy().into_owned()
-                                }
-                            };
-                            let text = get(msg.text);
-                            let text = text.trim_end();
-                            if !text.is_empty() {
-                                eprintln!("[mpv:{}:{}] {}", get(msg.prefix), get(msg.level), text);
+                    ffi::MPV_EVENT_LOG_MESSAGE if !ev.data.is_null() => {
+                        let msg = &*(ev.data as *const ffi::mpv_event_log_message);
+                        let get = |p: *const c_char| {
+                            if p.is_null() {
+                                String::new()
+                            } else {
+                                CStr::from_ptr(p).to_string_lossy().into_owned()
                             }
+                        };
+                        let text = get(msg.text);
+                        let text = text.trim_end();
+                        if !text.is_empty() {
+                            eprintln!("[mpv:{}:{}] {}", get(msg.prefix), get(msg.level), text);
                         }
                     }
                     _ => {}

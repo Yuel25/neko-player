@@ -17,8 +17,10 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::Arc;
 
+type GlProcLoader = dyn Fn(&CStr) -> *const c_void;
+
 thread_local! {
-    static GET_PROC: RefCell<Option<&'static dyn Fn(&CStr) -> *const c_void>> =
+    static GET_PROC: RefCell<Option<&'static GlProcLoader>> =
         const { RefCell::new(None) };
 }
 

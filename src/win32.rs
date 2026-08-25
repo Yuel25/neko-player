@@ -8,6 +8,7 @@
 //! title-bar drag (including snap preview).
 
 #![allow(non_snake_case, non_camel_case_types, dead_code)]
+#![allow(clippy::upper_case_acronyms)] // Preserve canonical Win32 ABI names.
 
 use std::ffi::c_void;
 use std::os::raw::{c_int, c_uint};

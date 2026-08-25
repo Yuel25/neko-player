@@ -117,6 +117,14 @@ iscc installer\neko-player.iss
 - glow OpenGL ES
 - Win32 无边框窗口集成
 
+核心模块职责：
+
+- `src/main.rs`：应用启动、OpenGL 渲染接线、UI 回调与生命周期编排
+- `src/app_support.rs`：UI 同步、显示格式化、文件对话框与退出状态快照
+- `src/player.rs`：libmpv 播放状态、命令、事件、轨道、歌词与播放列表
+- `src/video_gl.rs`：libmpv Render API 与 Slint OpenGL 集成
+- `src/settings.rs` / `src/thumb.rs` / `src/win32.rs`：配置、悬停缩略图与 Windows 原生集成
+
 ## 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。第三方依赖仍遵循其各自的许可证。

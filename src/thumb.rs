@@ -45,6 +45,8 @@ struct Queued {
     h: u32,
 }
 
+type ResultHandler = Box<dyn Fn(&str, slint::Image) + Send>;
+
 pub struct Inner {
     cache: HashMap<String, slint::Image>,
     order: VecDeque<String>,
@@ -54,7 +56,7 @@ pub struct Inner {
     pending: Option<Pending>,
     queued: Option<Queued>,
     /// Delivered on the UI thread whenever a request finishes.
-    on_result: Option<Box<dyn Fn(&str, slint::Image) + Send>>,
+    on_result: Option<ResultHandler>,
 }
 
 pub struct Thumbnailer {
@@ -224,15 +226,13 @@ fn process_events(inner: &Arc<Mutex<Inner>>, outdir: &Path) {
                     }
                     break; // the request is gone either way
                 }
-                ffi::MPV_EVENT_LOG_MESSAGE => {
-                    if !ev.data.is_null() {
-                        let msg = &*(ev.data as *const ffi::mpv_event_log_message);
-                        if !msg.text.is_null() {
-                            let text = CStr::from_ptr(msg.text).to_string_lossy();
-                            let text = text.trim_end();
-                            if !text.is_empty() {
-                                eprintln!("[thumb-mpv] {text}");
-                            }
+                ffi::MPV_EVENT_LOG_MESSAGE if !ev.data.is_null() => {
+                    let msg = &*(ev.data as *const ffi::mpv_event_log_message);
+                    if !msg.text.is_null() {
+                        let text = CStr::from_ptr(msg.text).to_string_lossy();
+                        let text = text.trim_end();
+                        if !text.is_empty() {
+                            eprintln!("[thumb-mpv] {text}");
                         }
                     }
                 }
@@ -475,7 +475,7 @@ fn dump_frame(bytes: &[u8], w: u32, h: u32) {
 
 /// Minimal 24-bit BMP writer (debug dumps only).
 fn write_bmp(path: PathBuf, w: u32, h: u32, rgb: &[u8]) -> std::io::Result<()> {
-    let row = (w as usize * 3 + 3) / 4 * 4;
+    let row = (w as usize * 3).div_ceil(4) * 4;
     let size = 54 + row * h as usize;
     let mut f = Vec::with_capacity(size);
     f.extend_from_slice(b"BM");
@@ -501,9 +501,7 @@ fn write_bmp(path: PathBuf, w: u32, h: u32, rgb: &[u8]) -> std::io::Result<()> {
             f.push(rgb[i + 1]);
             f.push(rgb[i]);
         }
-        for _ in w as usize * 3..row {
-            f.push(0);
-        }
+        f.resize(f.len() + row - w as usize * 3, 0);
     }
     std::fs::write(path, f)
 }

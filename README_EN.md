@@ -117,6 +117,14 @@ If the repository secrets `CERTIFICATE_BASE64` (the base64-encoded Authenticode 
 - glow with OpenGL ES
 - Win32 borderless-window integration
 
+Core module responsibilities:
+
+- `src/main.rs`: application startup, OpenGL wiring, UI callbacks, and lifecycle orchestration
+- `src/app_support.rs`: UI synchronization, display formatting, file dialogs, and exit-state snapshots
+- `src/player.rs`: libmpv state, commands, events, tracks, lyrics, and playlists
+- `src/video_gl.rs`: libmpv Render API and Slint OpenGL integration
+- `src/settings.rs` / `src/thumb.rs` / `src/win32.rs`: settings, hover thumbnails, and native Windows integration
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE). Third-party dependencies remain subject to their respective licenses.
