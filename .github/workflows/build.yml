@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - uses: actions/checkout@v4
@@ -44,8 +44,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "failed to download pinned libmpv archive" }
           $actual = (Get-FileHash $env:MPV_ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $env:MPV_SHA256) { throw "libmpv archive checksum mismatch: $actual" }
-          7z x $env:MPV_ARCHIVE '-y' '-othird_party/mpv' | Out-Null
-          Get-ChildItem third_party/mpv
+          $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          & $sevenZip x $env:MPV_ARCHIVE '-y' '-othird_party/mpv' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7z extraction failed" }
+          $required = @('third_party/mpv/libmpv-2.dll', 'third_party/mpv/include/mpv/client.h')
+          $missing = $required | Where-Object { -not (Test-Path $_ -PathType Leaf) }
+          if ($missing) { throw "libmpv archive is missing: $($missing -join ', ')" }
 
       - name: Generate MSVC import library
         shell: pwsh
@@ -78,76 +82,98 @@ jobs:
       - name: Test
         run: cargo test --locked --all-targets --all-features
 
-      - name: Generate thumbnail test media
-        shell: pwsh
-        run: |
-          $ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source
-          & $ffmpeg -y -f lavfi -i "testsrc2=duration=8:size=640x360:rate=24" -c:v libx264 -pix_fmt yuv420p thumb-test.mp4
-
+      # The hosted Windows image no longer guarantees ffmpeg. Use libmpv's
+      # own lavfi input, so this integration test has no unpinned tool dependency.
       - name: Test real thumbnail pipeline
         shell: pwsh
         env:
-          NEKO_TEST_MEDIA: ${{ github.workspace }}\thumb-test.mp4
+          NEKO_TEST_MEDIA: av://lavfi:testsrc2=duration=8:size=640x360:rate=24
           NEKO_TEST_DURATION: 8
         run: cargo test --locked generates_thumbnail_per_request -- --ignored --nocapture
 
       - name: Build
         run: cargo build --release --locked
 
-      # 可选代码签名：配置仓库 secrets CERTIFICATE_BASE64（PFX 的 base64）
-      # 和 CERTIFICATE_PASSWORD 后，CI 会自动用 signtool 签名主程序和安装包。
-      # 未配置时此步骤跳过，不影响构建。
+      # Signing remains optional, but partially configured credentials fail closed.
       - name: Sign neko-player.exe
         shell: pwsh
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
         run: |
-          if ('${{ secrets.CERTIFICATE_BASE64 }}' -eq '' -or '${{ secrets.CERTIFICATE_PASSWORD }}' -eq '') {
+          $hasCertificate = -not [string]::IsNullOrEmpty($env:CERTIFICATE_BASE64)
+          $hasPassword = -not [string]::IsNullOrEmpty($env:CERTIFICATE_PASSWORD)
+          if ($hasCertificate -xor $hasPassword) { throw 'signing credentials are only partially configured' }
+          if (-not $hasCertificate) {
             Write-Host '::notice::未配置签名证书 secrets，跳过代码签名。'
             exit 0
           }
-          [IO.File]::WriteAllBytes("$PWD\cert.pfx", [Convert]::FromBase64String('${{ secrets.CERTIFICATE_BASE64 }}'))
-          $signtool = (Get-ChildItem '${env:ProgramFiles(x86)}\Windows Kits\10\bin' -Recurse -Filter signtool.exe |
+          $cert = Join-Path $env:RUNNER_TEMP 'neko-player-cert.pfx'
+          [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
             Where-Object FullName -Match '\\x64\\' | Sort-Object FullName | Select-Object -Last 1).FullName
-          & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
-            /f cert.pfx /p '${{ secrets.CERTIFICATE_PASSWORD }}' target\release\neko-player.exe
+          if (-not $signtool) { throw 'x64 signtool.exe not found' }
+          & $signtool sign /fd SHA256 /tr https://timestamp.digicert.com /td SHA256 `
+            /f $cert /p $env:CERTIFICATE_PASSWORD target\release\neko-player.exe
+          if ($LASTEXITCODE -ne 0) { throw 'executable signing failed' }
+          & $signtool verify /pa target\release\neko-player.exe
+          if ($LASTEXITCODE -ne 0) { throw 'executable signature verification failed' }
 
       - name: Package ZIP
         shell: pwsh
         run: |
-          $version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $packages = @($metadata.packages | Where-Object name -eq 'neko-player')
+          if ($packages.Count -ne 1) { throw "expected one neko-player package, found $($packages.Count)" }
+          $version = $packages[0].version
           if ($env:GITHUB_REF -like 'refs/tags/*' -and $env:GITHUB_REF_NAME -ne "v$version") {
             throw "release tag $env:GITHUB_REF_NAME does not match Cargo version v$version"
           }
           "VERSION=$version" | Add-Content $env:GITHUB_ENV
-          Compress-Archive -Path target\release\neko-player.exe, target\release\libmpv-2.dll, THIRD_PARTY_NOTICES.md `
+          Compress-Archive -Path target\release\neko-player.exe, target\release\libmpv-2.dll, LICENSE, THIRD_PARTY_NOTICES.md `
             -DestinationPath "neko-player-v$version-windows-x64.zip"
+          if (-not (Test-Path "neko-player-v$version-windows-x64.zip" -PathType Leaf)) { throw 'portable ZIP was not created' }
 
       - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
+        run: choco install innosetup --version=6.7.1 --no-progress -y
 
       - name: Build installer
         shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc -PathType Leaf)) { throw "ISCC.exe not found: $iscc" }
           & $iscc "/DMyAppVersion=$env:VERSION" installer\neko-player.iss
-          Get-ChildItem dist
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed' }
+          $installer = "dist\neko-player-setup-$env:VERSION.exe"
+          if (-not (Test-Path $installer -PathType Leaf)) { throw "installer was not created: $installer" }
 
       - name: Sign installer
         shell: pwsh
+        env:
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
         run: |
-          if (-not (Test-Path cert.pfx)) {
+          $cert = Join-Path $env:RUNNER_TEMP 'neko-player-cert.pfx'
+          if (-not (Test-Path $cert -PathType Leaf)) {
             Write-Host '::notice::未配置签名证书 secrets，跳过代码签名。'
             exit 0
           }
-          $signtool = (Get-ChildItem '${env:ProgramFiles(x86)}\Windows Kits\10\bin' -Recurse -Filter signtool.exe |
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
             Where-Object FullName -Match '\\x64\\' | Sort-Object FullName | Select-Object -Last 1).FullName
-          & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
-            /f cert.pfx /p '${{ secrets.CERTIFICATE_PASSWORD }}' "dist\neko-player-setup-$env:VERSION.exe"
+          if (-not $signtool) { throw 'x64 signtool.exe not found' }
+          $installer = "dist\neko-player-setup-$env:VERSION.exe"
+          & $signtool sign /fd SHA256 /tr https://timestamp.digicert.com /td SHA256 `
+            /f $cert /p $env:CERTIFICATE_PASSWORD $installer
+          if ($LASTEXITCODE -ne 0) { throw 'installer signing failed' }
+          & $signtool verify /pa $installer
+          if ($LASTEXITCODE -ne 0) { throw 'installer signature verification failed' }
+          Remove-Item -Force $cert
 
       - name: Generate SHA-256 checksums
         shell: pwsh
         run: |
           $files = @("neko-player-v$env:VERSION-windows-x64.zip", "dist\neko-player-setup-$env:VERSION.exe")
           $lines = foreach ($file in $files) {
+            if (-not (Test-Path $file -PathType Leaf)) { throw "release artifact missing: $file" }
             $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $([IO.Path]::GetFileName($file))"
           }
@@ -162,12 +188,13 @@ jobs:
             dist/neko-player-setup-*.exe
             SHA256SUMS.txt
             THIRD_PARTY_NOTICES.md
+            LICENSE
 
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
-    runs-on: windows-latest
+    runs-on: windows-2022
     permissions:
       contents: write
     steps:
@@ -177,10 +204,39 @@ jobs:
           name: neko-player-windows-x64
           path: release-assets
 
-      - name: Create GitHub Release
+      - name: Verify and create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          $files = Get-ChildItem release-assets -File -Recurse | Select-Object -ExpandProperty FullName
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $zipName = "neko-player-v$version-windows-x64.zip"
+          $installerName = "neko-player-setup-$version.exe"
+          $zip = "release-assets\$zipName"
+          $installer = "release-assets\dist\$installerName"
+          $checksums = 'release-assets\SHA256SUMS.txt'
+          $files = @($zip, $installer, $checksums, 'release-assets\THIRD_PARTY_NOTICES.md', 'release-assets\LICENSE')
+          $missing = $files | Where-Object { -not (Test-Path $_ -PathType Leaf) }
+          if ($missing) { throw "missing release assets: $($missing -join ', ')" }
+
+          $expectedNames = @($zipName, $installerName)
+          $entries = @{}
+          foreach ($line in Get-Content $checksums) {
+            if ($line -notmatch '^([0-9a-f]{64})  ([^\/]+)$') { throw "invalid checksum line: $line" }
+            if ($entries.ContainsKey($Matches[2])) { throw "duplicate checksum entry: $($Matches[2])" }
+            $entries[$Matches[2]] = $Matches[1]
+          }
+          if ($entries.Count -ne 2 -or @($expectedNames | Where-Object { -not $entries.ContainsKey($_) }).Count -ne 0) {
+            throw 'checksum manifest does not contain the exact expected artifacts'
+          }
+          foreach ($artifact in @($zip, $installer)) {
+            $name = [IO.Path]::GetFileName($artifact)
+            $actual = (Get-FileHash $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $entries[$name]) { throw "checksum mismatch: $name" }
+          }
+
+          gh release view $env:GITHUB_REF_NAME *> $null
+          if ($LASTEXITCODE -eq 0) { throw "release already exists: $env:GITHUB_REF_NAME" }
           gh release create $env:GITHUB_REF_NAME --generate-notes --latest @files
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release creation failed' }

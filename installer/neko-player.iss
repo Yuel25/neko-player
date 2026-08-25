@@ -36,6 +36,7 @@ Name: "associate"; Description: "关联常见音视频格式"; GroupDescription:
 Source: "..\target\release\neko-player.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\libmpv-2.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
