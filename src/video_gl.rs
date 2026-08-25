@@ -81,7 +81,7 @@ impl VideoRenderer {
         player: Arc<MpvPlayer>,
         on_frame_ready: impl Fn() + Send + 'static,
     ) -> Result<VideoRenderer, String> {
-        let (textures, fbos) = unsafe { create_targets(&gl, DEFAULT_SIZE) };
+        let (textures, fbos) = unsafe { create_targets(&gl, DEFAULT_SIZE)? };
 
         let api_type = b"opengl\0";
         let mut init = ffi::mpv_opengl_init_params {
@@ -108,6 +108,7 @@ impl VideoRenderer {
             ffi::mpv_render_context_create(&mut rc, player.handle(), params.as_mut_ptr())
         };
         if err < 0 {
+            unsafe { destroy_targets(&gl, &textures, &fbos) };
             return Err(format!("mpv_render_context_create failed: {err}"));
         }
         eprintln!("[neko] mpv render context created");
@@ -173,12 +174,16 @@ impl VideoRenderer {
         if let Some(sz) = self.player.take_pending_size() {
             if sz != self.size {
                 eprintln!("[neko] video size: {}x{}", sz.0, sz.1);
-                unsafe {
-                    destroy_targets(&self.gl, &self.textures, &self.fbos);
-                }
-                let (textures, fbos) = unsafe { create_targets(&self.gl, sz) };
-                self.textures = textures;
-                self.fbos = fbos;
+                let Ok((textures, fbos)) = (unsafe { create_targets(&self.gl, sz) }) else {
+                    eprintln!(
+                        "[neko] cannot allocate render targets for {}x{}; keeping previous frame",
+                        sz.0, sz.1
+                    );
+                    return None;
+                };
+                let old_textures = std::mem::replace(&mut self.textures, textures);
+                let old_fbos = std::mem::replace(&mut self.fbos, fbos);
+                unsafe { destroy_targets(&self.gl, &old_textures, &old_fbos) };
                 self.size = sz;
                 self.clear_black(0);
                 self.clear_black(1);
@@ -287,11 +292,18 @@ impl VideoRenderer {
 unsafe fn create_targets(
     gl: &glow::Context,
     (w, h): (u32, u32),
-) -> ([glow::NativeTexture; 2], [glow::NativeFramebuffer; 2]) {
+) -> Result<([glow::NativeTexture; 2], [glow::NativeFramebuffer; 2]), String> {
     let mut textures = Vec::with_capacity(2);
     let mut fbos = Vec::with_capacity(2);
     for _ in 0..2 {
-        let tex = gl.create_texture().expect("gl.create_texture");
+        let tex = match gl.create_texture() {
+            Ok(tex) => tex,
+            Err(e) => {
+                cleanup_partial_targets(gl, &textures, &fbos);
+                return Err(format!("create texture: {e}"));
+            }
+        };
+        textures.push(tex);
         gl.bind_texture(glow::TEXTURE_2D, Some(tex));
         gl.tex_image_2d(
             glow::TEXTURE_2D,
@@ -325,18 +337,40 @@ unsafe fn create_targets(
             glow::CLAMP_TO_EDGE as i32,
         );
 
-        let fbo = gl.create_framebuffer().expect("gl.create_framebuffer");
+        let fbo = match gl.create_framebuffer() {
+            Ok(fbo) => fbo,
+            Err(e) => {
+                cleanup_partial_targets(gl, &textures, &fbos);
+                return Err(format!("create framebuffer: {e}"));
+            }
+        };
+        fbos.push(fbo);
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
         gl.framebuffer_texture(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, Some(tex), 0);
+        let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
         gl.bind_texture(glow::TEXTURE_2D, None);
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-
-        textures.push(tex);
-        fbos.push(fbo);
+        if status != glow::FRAMEBUFFER_COMPLETE {
+            cleanup_partial_targets(gl, &textures, &fbos);
+            return Err(format!("incomplete framebuffer: 0x{status:x}"));
+        }
     }
-    let textures: [glow::NativeTexture; 2] = textures.try_into().unwrap();
-    let fbos: [glow::NativeFramebuffer; 2] = fbos.try_into().unwrap();
-    (textures, fbos)
+    Ok((textures.try_into().unwrap(), fbos.try_into().unwrap()))
+}
+
+unsafe fn cleanup_partial_targets(
+    gl: &glow::Context,
+    textures: &[glow::NativeTexture],
+    fbos: &[glow::NativeFramebuffer],
+) {
+    gl.bind_texture(glow::TEXTURE_2D, None);
+    gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+    for fbo in fbos {
+        gl.delete_framebuffer(*fbo);
+    }
+    for texture in textures {
+        gl.delete_texture(*texture);
+    }
 }
 
 unsafe fn destroy_targets(

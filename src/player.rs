@@ -160,10 +160,12 @@ pub(crate) fn err_str(code: c_int) -> String {
 }
 
 impl MpvPlayer {
-    pub fn new() -> MpvPlayer {
+    pub fn new() -> Result<MpvPlayer, String> {
         unsafe {
             let handle = ffi::mpv_create();
-            assert!(!handle.is_null(), "mpv_create() failed");
+            if handle.is_null() {
+                return Err("mpv_create() failed".to_owned());
+            }
 
             // vo=libmpv routes all video through the render API — without
             // it mpv briefly opens its own native player window at loadfile.
@@ -185,11 +187,17 @@ impl MpvPlayer {
                 let ck = CString::new(k).unwrap();
                 let cv = CString::new(v).unwrap();
                 let r = ffi::mpv_set_property_string(handle, ck.as_ptr(), cv.as_ptr());
-                assert!(r >= 0, "mpv option {k}={v} rejected: {}", err_str(r));
+                if r < 0 {
+                    ffi::mpv_terminate_destroy(handle);
+                    return Err(format!("mpv option {k}={v} rejected: {}", err_str(r)));
+                }
             }
 
             let r = ffi::mpv_initialize(handle);
-            assert_eq!(r, 0, "mpv_initialize failed: {}", err_str(r));
+            if r < 0 {
+                ffi::mpv_terminate_destroy(handle);
+                return Err(format!("mpv_initialize failed: {}", err_str(r)));
+            }
 
             let player = MpvPlayer {
                 handle,
@@ -215,16 +223,23 @@ impl MpvPlayer {
                 (11, "track-list", ffi::MPV_FORMAT_NODE),
                 (12, "eof-reached", ffi::MPV_FORMAT_FLAG),
             ] {
-                player.observe(id, name, format);
+                if let Err(e) = player.observe(id, name, format) {
+                    ffi::mpv_terminate_destroy(handle);
+                    return Err(e);
+                }
             }
-            player
+            Ok(player)
         }
     }
 
-    fn observe(&self, id: u64, name: &str, format: c_int) {
+    fn observe(&self, id: u64, name: &str, format: c_int) -> Result<(), String> {
         let c = CString::new(name).unwrap();
         let r = unsafe { ffi::mpv_observe_property(self.handle, id, c.as_ptr(), format) };
-        assert!(r >= 0, "observe_property({name}) failed: {}", err_str(r));
+        if r < 0 {
+            Err(format!("observe_property({name}) failed: {}", err_str(r)))
+        } else {
+            Ok(())
+        }
     }
 
     fn get_i64(&self, name: &str) -> Option<i64> {

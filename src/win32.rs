@@ -114,6 +114,7 @@ pub struct WINDOWPLACEMENT {
 const SW_MAXIMIZE: c_int = 3;
 const SW_SHOWMAXIMIZED: c_uint = 3;
 const MONITOR_DEFAULTTONULL: c_uint = 0;
+const WM_NCDESTROY: c_uint = 0x0082;
 
 #[link(name = "dwmapi")]
 extern "system" {
@@ -141,6 +142,7 @@ extern "system" {
         uIdSubclass: usize,
         dwRefData: *mut c_void,
     ) -> c_int;
+    fn RemoveWindowSubclass(hWnd: HWND, pfnSubclass: SubclassProc, uIdSubclass: usize) -> c_int;
     fn DefSubclassProc(hWnd: HWND, uMsg: c_uint, wParam: usize, lParam: isize) -> isize;
 }
 
@@ -282,8 +284,7 @@ pub fn restore_window_rect(hwnd: HWND, rect: SavedRect) -> bool {
 
 /// Accept OS file drops anywhere on the window and forward the paths to
 /// `on_files` (runs on the UI thread, inside the window message pump).
-/// The callback is intentionally leaked with the subclass; it lives as long
-/// as the single application window.
+/// The subclass owns the callback and releases it on WM_NCDESTROY.
 pub fn install_file_drop(hwnd: HWND, on_files: DropCallback) {
     unsafe {
         // winit registers its own OLE IDropTarget at window creation, and real
@@ -311,6 +312,15 @@ unsafe extern "system" fn drop_proc(
     _id: usize,
     ref_data: *mut c_void,
 ) -> isize {
+    if msg == WM_NCDESTROY {
+        DragAcceptFiles(hwnd, 0);
+        RemoveWindowSubclass(hwnd, drop_proc, _id);
+        let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+        if !ref_data.is_null() {
+            drop(Box::from_raw(ref_data as *mut DropCallback));
+        }
+        return result;
+    }
     if msg == WM_DROPFILES {
         let hdrop = wparam as *mut c_void;
         let count = DragQueryFileW(hdrop, u32::MAX, std::ptr::null_mut(), 0);

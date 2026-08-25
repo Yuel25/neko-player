@@ -59,7 +59,17 @@ fn main() {
     };
     // The native window (and its handle) only exists once the backend
     // starts rendering; the borderless chrome is applied in RenderingSetup.
-    let player = Arc::new(MpvPlayer::new());
+    let player = match MpvPlayer::new() {
+        Ok(player) => Arc::new(player),
+        Err(e) => {
+            diagnostics::log("fatal", format!("libmpv initialization failed: {e}"));
+            win32::show_error(&format!(
+                "无法初始化 libmpv，播放器不能启动。\n\n请确认 libmpv-2.dll 完整且版本匹配。\n\n错误：{e}\n\n诊断日志：{}",
+                diagnostics::path().display()
+            ));
+            return;
+        }
+    };
 
     // Persistent settings: restore playback prefs and the last playlist.
     let settings_rc = Arc::new(std::sync::Mutex::new(settings::Settings::load()));
