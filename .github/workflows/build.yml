@@ -79,8 +79,13 @@ jobs:
       - name: Lint
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
+      # Cargo test binaries live in target/debug/deps; put libmpv on PATH so the
+      # Windows loader can resolve it before the test process starts.
       - name: Test
-        run: cargo test --locked --all-targets --all-features
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD\third_party\mpv;$env:PATH"
+          cargo test --locked --all-targets --all-features
 
       # The hosted Windows image no longer guarantees ffmpeg. Use libmpv's
       # own lavfi input, so this integration test has no unpinned tool dependency.
@@ -89,7 +94,9 @@ jobs:
         env:
           NEKO_TEST_MEDIA: av://lavfi:testsrc2=duration=8:size=640x360:rate=24
           NEKO_TEST_DURATION: 8
-        run: cargo test --locked generates_thumbnail_per_request -- --ignored --nocapture
+        run: |
+          $env:PATH = "$PWD\third_party\mpv;$env:PATH"
+          cargo test --locked generates_thumbnail_per_request -- --ignored --nocapture
 
       - name: Build
         run: cargo build --release --locked
