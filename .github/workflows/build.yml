@@ -12,6 +12,9 @@ env:
   MPV_TAG: 2026-08-25-654e9382c0
   MPV_ARCHIVE: mpv-dev-x86_64-20260825-git-654e9382c0.7z
   MPV_SHA256: 02a800cb2f588594a706a0ef76193fce50bc80786fb1dcb625c0096628e67b0a
+  VULKAN_RT_VERSION: 1.4.357.0
+  VULKAN_RT_ARCHIVE: VulkanRT-X64-1.4.357.0-Components.zip
+  VULKAN_RT_SHA256: a14672efed15aafc7f5a16572d35cd3a3416eadf670aeee3cdf50ee32d5fbf83
 
 permissions:
   contents: read
@@ -79,14 +82,34 @@ jobs:
       - name: Lint
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      # Cargo test binaries live in target/debug/deps. Copy libmpv there so the
-      # Windows loader resolves it from the executable directory deterministically.
-      - name: Test
+      # The pinned libmpv imports vulkan-1.dll, which headless hosted runners
+      # do not provide. Deploy both native DLLs beside Cargo's test harnesses.
+      - name: Deploy native test dependencies
         shell: pwsh
         run: |
+          $imports = (dumpbin /dependents third_party\mpv\libmpv-2.dll | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'failed to inspect libmpv dependencies' }
+          if ($imports -notmatch '(?im)^\s+vulkan-1\.dll\s*$') {
+            throw 'pinned libmpv no longer imports vulkan-1.dll; review the CI runtime provisioning'
+          }
+
+          $runtimeArchive = Join-Path $env:RUNNER_TEMP $env:VULKAN_RT_ARCHIVE
+          $runtimeDir = Join-Path $env:RUNNER_TEMP 'vulkan-runtime'
+          $runtimeUri = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_RT_VERSION/windows/$env:VULKAN_RT_ARCHIVE"
+          curl.exe --fail --location --retry 3 --output $runtimeArchive $runtimeUri
+          if ($LASTEXITCODE -ne 0) { throw 'failed to download pinned Vulkan runtime components' }
+          $actual = (Get-FileHash $runtimeArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:VULKAN_RT_SHA256) { throw "Vulkan runtime archive checksum mismatch: $actual" }
+          Expand-Archive -LiteralPath $runtimeArchive -DestinationPath $runtimeDir -Force
+          $vulkanLoader = Join-Path $runtimeDir "VulkanRT-X64-$env:VULKAN_RT_VERSION-Components\x64\vulkan-1.dll"
+          if (-not (Test-Path $vulkanLoader -PathType Leaf)) { throw "Vulkan loader not found: $vulkanLoader" }
+
           New-Item -ItemType Directory -Force target\debug\deps | Out-Null
           Copy-Item third_party\mpv\libmpv-2.dll target\debug\deps\libmpv-2.dll -Force
-          cargo test --locked --all-targets --all-features
+          Copy-Item $vulkanLoader target\debug\deps\vulkan-1.dll -Force
+
+      - name: Test
+        run: cargo test --locked --all-targets --all-features
 
       # The hosted Windows image no longer guarantees ffmpeg. Use libmpv's
       # own lavfi input, so this integration test has no unpinned tool dependency.
