@@ -1,6 +1,6 @@
 [package]
 name = "neko-player"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 description = "A beautiful media player powered by libmpv + Slint"
 license = "MIT"
