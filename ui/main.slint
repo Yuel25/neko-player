@@ -313,12 +313,14 @@ export component MainWindow inherits Window {
             RoundButton { glyph: "»"; enabled: root.has-media; clicked => { root.next-track(); } }
         }
 
+        // Item widths + spacing must sum to the declared width (58+32+80+56+62 + 4×8 = 320),
+        // otherwise the overflow pushes the trailing 打开 button past the 14px right margin.
         HorizontalLayout {
             x: parent.width - self.width - 14px; y: 38px; width: 320px; height: 42px; spacing: 8px; alignment: center;
             PillButton { width: 58px; label: root.speed-text; enabled: root.has-media; clicked => { root.cycle-speed(); } }
             RoundButton { glyph: root.muted ? "×" : "♪"; clicked => { root.toggle-mute(); } }
             Rectangle {
-                width: 96px; height: 26px;
+                width: 80px; height: 26px;
                 Rectangle {
                     x: 0; y: (parent.height - 4px) / 2; width: parent.width; height: 4px; border-radius: 2px; background: #393841;
                     // 0-100% is the normal range (VOLUME_MAX = 200 in Rust);
