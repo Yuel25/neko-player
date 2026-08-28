@@ -115,6 +115,9 @@ pub struct State {
     eof_reached: bool,
     /// Set when END_FILE reports MPV_END_FILE_REASON_ERROR (unloadable file).
     load_failed: bool,
+    /// Human-readable notice for the most recent load failure (name + mpv
+    /// error), consumed by the UI via take_error_notice().
+    error_notice: Option<String>,
     /// Consecutive auto-advances that happened without playback ever passing
     /// 3 seconds; guards against a playlist of broken files looping forever.
     instant_advances: u32,
@@ -556,6 +559,12 @@ impl MpvPlayer {
         }
     }
 
+    /// Notice for the most recent load failure, if the UI has not consumed
+    /// it yet.
+    pub fn take_error_notice(&self) -> Option<String> {
+        self.state.lock().unwrap().error_notice.take()
+    }
+
     fn stop_playback(&self) {
         {
             let mut state = self.state.lock().unwrap();
@@ -762,7 +771,16 @@ impl MpvPlayer {
                         let end = &*(ev.data as *const ffi::mpv_event_end_file);
                         if end.reason == ffi::MPV_END_FILE_REASON_ERROR {
                             eprintln!("[neko] loading failed ({}), skipping", err_str(end.error));
-                            self.state.lock().unwrap().load_failed = true;
+                            let mut st = self.state.lock().unwrap();
+                            st.load_failed = true;
+                            let name = st
+                                .media_path
+                                .as_ref()
+                                .and_then(|p| p.file_name())
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "媒体文件".into());
+                            let detail = err_str(end.error);
+                            st.error_notice = Some(format!("无法播放「{name}」：{detail}"));
                         }
                     }
                     ffi::MPV_EVENT_LOG_MESSAGE if !ev.data.is_null() => {
@@ -800,6 +818,7 @@ impl MpvPlayer {
                 // after the whole playlist failed to even start playing.
                 if st.instant_advances > st.playlist.len() as u32 + 2 {
                     eprintln!("[neko] too many consecutive load failures; auto-advance suspended");
+                    st.error_notice = Some("连续多个文件无法播放，已停止自动尝试".into());
                     false
                 } else {
                     st.instant_advances += 1;

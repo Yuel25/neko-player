@@ -109,6 +109,24 @@ export component MainWindow inherits Window {
     callback prev-track(); callback next-track(); callback play-index(int); callback remove-index(int);
     callback clear-playlist(); callback cycle-loop(); callback toggle-playlist(); callback add-file();
     callback resume-accept(); callback resume-dismiss();
+
+    // Load-failure toast. The auto-hide timer lives in Slint because the mpv
+    // wakeup path requires Send closures and slint::Timer is not Send.
+    property <bool> toast-visible: false;
+    property <string> toast-text;
+    callback show-toast(string);
+    show-toast(text) => {
+        toast-text = text;
+        toast-visible = true;
+    }
+    // Hides the toast 4s after it is shown; running tracks toast-visible so
+    // the timer starts with the toast and stops once it is hidden. A repeat
+    // show while already visible only updates the text (no restart).
+    toast-timer := Timer {
+        interval: 4s;
+        running: toast-visible;
+        triggered => { toast-visible = false; }
+    }
     callback preview-activity(bool, float);
 
     Rectangle {
@@ -424,6 +442,32 @@ export component MainWindow inherits Window {
             width: 232px; height: 30px; spacing: 12px;
             PillButton { width: 110px; label: "继续播放"; clicked => { root.resume-accept(); } }
             PillButton { width: 110px; label: "从头播放"; clicked => { root.resume-dismiss(); } }
+        }
+    }
+
+    // Load-failure toast, centered under the title bar; also visible in
+    // fullscreen (where there is no title bar to clear).
+    Rectangle {
+        visible: toast-visible;
+        opacity: toast-visible ? 1 : 0;
+        animate opacity { duration: 120ms; }
+        x: (parent.width - self.width) / 2;
+        y: root.fullscreen ? 16px : 60px;
+        width: min(parent.width - 160px, toast-label.preferred-width + 52px);
+        height: 36px;
+        border-radius: 10px;
+        background: #241014f2; border-width: 1px; border-color: #ff5f5750;
+        drop-shadow-color: #00000070; drop-shadow-blur: 18px; drop-shadow-offset-y: 6px;
+        Rectangle {
+            x: 13px; y: (parent.height - 16px) / 2; width: 16px; height: 16px; border-radius: 8px;
+            background: #ff5f57;
+            Text { width: 100%; height: 100%; text: "!"; color: #2b1216; font-size: 11px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        toast-label := Text {
+            x: 38px; width: parent.width - 52px; height: 100%;
+            text: toast-text;
+            color: #f3d9d6; font-size: 12px;
+            overflow: elide; vertical-alignment: center;
         }
     }
 }

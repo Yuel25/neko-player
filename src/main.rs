@@ -180,6 +180,10 @@ fn main() {
                         ui.set_resume_visible(true);
                     }
                 }
+                // Load failures (END_FILE with reason=error) surface as a toast.
+                if let Some(text) = player.take_error_notice() {
+                    ui.invoke_show_toast(text.into());
+                }
                 ui.window().request_redraw();
             })
             .is_err()
