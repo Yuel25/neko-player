@@ -71,6 +71,10 @@ fn main() {
         }
     };
 
+    // The slider geometry and amber amplification threshold scale with the
+    // Rust-side VOLUME_MAX instead of a duplicated literal in the UI.
+    ui.set_volume_max(player::VOLUME_MAX as f32);
+
     // Persistent settings: restore playback prefs and the last playlist.
     let settings_rc = Arc::new(std::sync::Mutex::new(settings::Settings::load()));
     {
@@ -92,8 +96,7 @@ fn main() {
 
     // Hover-thumbnail preview (second headless mpv, encode-to-rawvideo).
     let thumbnailer = {
-        let dir = std::env::temp_dir().join(format!("neko-player-thumbs-{}", std::process::id()));
-        match thumb::Thumbnailer::new(dir) {
+        match thumb::Thumbnailer::new(thumb::session_dir()) {
             Ok(t) => Some(Arc::new(t)),
             Err(e) => {
                 eprintln!("[neko] progress preview disabled: {e}");

@@ -22,6 +22,36 @@ const FAILURE_BACKOFF: Duration = Duration::from_secs(2);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const BOX_W: u32 = 256;
 const BOX_H: u32 = 144;
+const TEMP_DIR_PREFIX: &str = "neko-player-thumbs-";
+
+/// Per-session thumbnail output directory under the system temp dir, named
+/// after the pid so leftovers of crashed sessions can be identified.
+pub fn session_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("{TEMP_DIR_PREFIX}{}", std::process::id()))
+}
+
+/// Remove output dirs of crashed earlier sessions. Graceful shutdowns clean
+/// their own dir in the worker; a pid that no longer exists (best effort —
+/// an unqueryable or reused pid counts as alive) marks an orphan.
+fn cleanup_stale_temp_dirs() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix(TEMP_DIR_PREFIX))
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if crate::win32::process_alive(pid) {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+}
 
 type PixelBuffer = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
 type ResultHandler = Box<dyn Fn(&str, slint::Image) + Send>;
@@ -57,6 +87,7 @@ pub struct Thumbnailer {
 
 impl Thumbnailer {
     pub fn new(outdir: PathBuf) -> Result<Thumbnailer, String> {
+        cleanup_stale_temp_dirs();
         let (tx, rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(0);
         let shared = Arc::new(Mutex::new(Shared {
@@ -623,5 +654,18 @@ mod tests {
         let (_, cached) = thumb.request(Path::new(&media), 4.0, 600.0, 2304, 1440);
         assert!(cached.is_some(), "expected cached thumbnail");
         thumb.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod stale_dir_tests {
+    use super::{cleanup_stale_temp_dirs, TEMP_DIR_PREFIX};
+
+    #[test]
+    fn removes_dir_of_pid_zero() {
+        let orphan = std::env::temp_dir().join(format!("{TEMP_DIR_PREFIX}0"));
+        let _ = std::fs::create_dir_all(&orphan);
+        cleanup_stale_temp_dirs();
+        assert!(!orphan.exists());
     }
 }

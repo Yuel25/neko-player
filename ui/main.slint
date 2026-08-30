@@ -85,6 +85,9 @@ export component MainWindow inherits Window {
 
     in property <image> video-frame; in property <string> media-title: ""; in property <string> time-text: "00:00"; in property <string> duration-text: "00:00";
     in property <float> progress: 0; in property <bool> paused: true; in property <bool> has-media: false; in property <float> volume: 100; in property <bool> muted: false;
+    // Mirrors VOLUME_MAX in Rust (set at startup): the slider maps its width
+    // onto 0..volume-max and the amber amplification flag starts at half.
+    in property <float> volume-max: 200;
     in property <string> speed-text: "1.00x"; in property <string> audio-label: "音轨 -"; in property <string> sub-label: "字幕 -";
     in property <string> lyric-text: "";
     in property <[PlayItem]> playlist-model;
@@ -182,8 +185,8 @@ export component MainWindow inherits Window {
             else if (event.text == "f" || event.text == "F") { root.toggle-fullscreen(); accept }
             else if (event.text == "n" || event.text == "N") { root.next-track(); accept }
             else if (event.text == "p" || event.text == "P") { root.prev-track(); accept }
-            else if (event.text == "l" || event.text == "L") { root.toggle-playlist(); accept }
-            else if (event.text == "Escape") { if (root.fullscreen) { root.toggle-fullscreen(); } accept }
+            else if ((event.text == "l" || event.text == "L") && !root.fullscreen) { root.toggle-playlist(); accept }
+            else if (event.text == "Escape" && root.fullscreen) { root.toggle-fullscreen(); accept }
             else { reject }
         }
     }
@@ -341,14 +344,14 @@ export component MainWindow inherits Window {
                 width: 80px; height: 26px;
                 Rectangle {
                     x: 0; y: (parent.height - 4px) / 2; width: parent.width; height: 4px; border-radius: 2px; background: #393841;
-                    // 0-100% is the normal range (VOLUME_MAX = 200 in Rust);
-                    // above 100 the fill turns amber to flag amplification.
+                    // 0..volume-max/2 is the normal range; beyond half the
+                    // fill turns amber to flag software amplification.
                     volume-fill := Rectangle {
                         x: 0;
-                        width: parent.width * clamp(root.volume / 200, 0.0, 1.0);
+                        width: parent.width * clamp(root.volume / root.volume-max, 0.0, 1.0);
                         height: 100%;
                         border-radius: 2px;
-                        background: root.volume > 100 ? #f0a35e : #b7b4c2;
+                        background: root.volume > root.volume-max / 2 ? #f0a35e : #b7b4c2;
                     }
                     Rectangle {
                         x: clamp(volume-fill.width - self.width / 2, 0px, parent.width - self.width);
@@ -358,12 +361,12 @@ export component MainWindow inherits Window {
                         border-radius: 5px;
                         background: #f4f0ff;
                         border-width: 2px;
-                        border-color: root.volume > 100 ? #f0a35e : #8b5cf6;
+                        border-color: root.volume > root.volume-max / 2 ? #f0a35e : #8b5cf6;
                     }
                 }
                 TouchArea {
-                    mouse-cursor: pointer; clicked => { root.set-volume(200 * self.mouse-x / self.width); }
-                    pointer-event(_) => { if self.pressed { root.set-volume(200 * self.mouse-x / self.width); } }
+                    mouse-cursor: pointer; clicked => { root.set-volume(root.volume-max * self.mouse-x / self.width); }
+                    pointer-event(_) => { if self.pressed { root.set-volume(root.volume-max * self.mouse-x / self.width); } }
                 }
             }
             PillButton { width: 56px; label: "截图"; enabled: root.has-media; clicked => { root.save-current-frame(); } }

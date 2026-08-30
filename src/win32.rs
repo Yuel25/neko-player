@@ -12,8 +12,10 @@
 
 use std::ffi::c_void;
 use std::os::raw::{c_int, c_uint};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub type HWND = *mut c_void;
+pub type HANDLE = *mut c_void;
 
 const GWL_STYLE: c_int = -16;
 const WS_CAPTION: isize = 0x00C0_0000;
@@ -31,6 +33,12 @@ const WM_DROPFILES: c_uint = 0x0233;
 
 /// Invoked on the UI thread with the paths of files dropped onto the window.
 pub type DropCallback = Box<dyn Fn(Vec<std::path::PathBuf>)>;
+
+/// RenderingSetup can run more than once per window (GL context recreation);
+/// the subclass survives rendering teardowns, so only the first install takes
+/// effect. Re-calling SetWindowSubclass with the same id would leak the
+/// previous callback Box.
+static DROP_SUBCLASS_INSTALLED: AtomicBool = AtomicBool::new(false);
 type SubclassProc = unsafe extern "system" fn(
     hWnd: HWND,
     uMsg: c_uint,
@@ -65,7 +73,15 @@ extern "system" {
     fn GetWindowPlacement(hWnd: HWND, lpwndpl: *mut WINDOWPLACEMENT) -> c_int;
     fn ShowWindow(hWnd: HWND, nCmdShow: c_int) -> c_int;
     fn MonitorFromPoint(pt: POINT, dwFlags: c_uint) -> HWND;
+    fn GetMonitorInfoW(hMonitor: HWND, lpmi: *mut MONITORINFO) -> c_int;
     fn MessageBoxW(hWnd: HWND, lpText: *const u16, lpCaption: *const u16, uType: c_uint) -> c_int;
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn OpenProcess(dwDesiredAccess: c_uint, bInheritHandle: c_int, dwProcessId: c_uint) -> HANDLE;
+    fn CloseHandle(hObject: HANDLE) -> c_int;
+    fn GetLastError() -> c_uint;
 }
 
 pub fn show_error(message: &str) {
@@ -111,9 +127,19 @@ pub struct WINDOWPLACEMENT {
     pub rcNormalPosition: RECT,
 }
 
+#[repr(C)]
+pub struct MONITORINFO {
+    pub cbSize: c_uint,
+    pub rcMonitor: RECT,
+    pub rcWork: RECT,
+    pub dwFlags: c_uint,
+}
+
 const SW_MAXIMIZE: c_int = 3;
 const SW_SHOWMAXIMIZED: c_uint = 3;
-const MONITOR_DEFAULTTONULL: c_uint = 0;
+const MONITOR_DEFAULTTONEAREST: c_uint = 2;
+const PROCESS_QUERY_LIMITED_INFORMATION: c_uint = 0x1000;
+const ERROR_INVALID_PARAMETER: c_uint = 87;
 const WM_NCDESTROY: c_uint = 0x0082;
 
 #[link(name = "dwmapi")]
@@ -254,25 +280,71 @@ pub fn save_window_rect(hwnd: HWND) -> Option<SavedRect> {
     }
 }
 
-/// Apply a saved placement. Skipped entirely when the saved center no longer
-/// intersects any monitor (e.g. an unplugged second screen).
+/// Whether a process with this pid exists (best effort). A pid that cannot
+/// even be queried counts as alive so its files are never cleaned up.
+pub fn process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if !handle.is_null() {
+            CloseHandle(handle);
+            return true;
+        }
+        GetLastError() != ERROR_INVALID_PARAMETER
+    }
+}
+
+/// Apply a saved placement, clamped into the nearest monitor's work area so
+/// placements saved on a larger or since-unplugged screen stay reachable.
 pub fn restore_window_rect(hwnd: HWND, rect: SavedRect) -> bool {
     unsafe {
         let center = POINT {
             x: rect.x + rect.w / 2,
             y: rect.y + rect.h / 2,
         };
-        if MonitorFromPoint(center, MONITOR_DEFAULTTONULL).is_null() {
-            eprintln!("[neko] saved window position is off-screen; ignoring");
+        let monitor = MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            eprintln!("[neko] no monitor available; ignoring saved window position");
             return false;
+        }
+        let mut x = rect.x;
+        let mut y = rect.y;
+        let mut w = rect.w;
+        let mut h = rect.h;
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as c_uint,
+            rcMonitor: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            rcWork: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            dwFlags: 0,
+        };
+        if GetMonitorInfoW(monitor, &mut info) != 0 {
+            let work = info.rcWork;
+            let work_w = (work.right - work.left).max(1);
+            let work_h = (work.bottom - work.top).max(1);
+            w = w.clamp(1, work_w);
+            h = h.clamp(1, work_h);
+            x = x.clamp(work.left, (work.right - w).max(work.left));
+            y = y.clamp(work.top, (work.bottom - h).max(work.top));
         }
         SetWindowPos(
             hwnd,
             std::ptr::null_mut(),
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
+            x,
+            y,
+            w,
+            h,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
         if rect.maximized {
@@ -286,6 +358,9 @@ pub fn restore_window_rect(hwnd: HWND, rect: SavedRect) -> bool {
 /// `on_files` (runs on the UI thread, inside the window message pump).
 /// The subclass owns the callback and releases it on WM_NCDESTROY.
 pub fn install_file_drop(hwnd: HWND, on_files: DropCallback) {
+    if DROP_SUBCLASS_INSTALLED.load(Ordering::Acquire) {
+        return;
+    }
     unsafe {
         // winit registers its own OLE IDropTarget at window creation, and real
         // Explorer drags are delivered there instead of producing WM_DROPFILES.
@@ -298,9 +373,10 @@ pub fn install_file_drop(hwnd: HWND, on_files: DropCallback) {
             drop(Box::from_raw(cb));
             DragAcceptFiles(hwnd, 0);
             eprintln!("[neko] SetWindowSubclass failed; drag-and-drop disabled");
-        } else {
-            eprintln!("[neko] file drop installed (hwnd={:p})", hwnd);
+            return;
         }
+        DROP_SUBCLASS_INSTALLED.store(true, Ordering::Release);
+        eprintln!("[neko] file drop installed (hwnd={:p})", hwnd);
     }
 }
 
@@ -341,4 +417,15 @@ unsafe extern "system" fn drop_proc(
         return 0;
     }
     DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_alive;
+
+    #[test]
+    fn detects_own_process_and_rejects_invalid_pid() {
+        assert!(process_alive(std::process::id()));
+        assert!(!process_alive(0));
+    }
 }

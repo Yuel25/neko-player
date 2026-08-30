@@ -66,6 +66,10 @@ pub struct VideoRenderer {
     size: (u32, u32),
     /// Index of the texture currently shown by Slint; mpv renders into the other.
     front: usize,
+    /// Targets of the previous video size after a resize. Slint may still
+    /// display (borrow) their front texture until the replacement image is
+    /// committed, so they are kept alive one extra frame before destruction.
+    retired: Option<([glow::NativeTexture; 2], [glow::NativeFramebuffer; 2])>,
     rc: *mut ffi::mpv_render_context,
     update_ctx: *mut c_void,
 }
@@ -130,6 +134,7 @@ impl VideoRenderer {
             fbos,
             size: DEFAULT_SIZE,
             front: 0,
+            retired: None,
             rc,
             update_ctx: ctx,
         };
@@ -183,12 +188,21 @@ impl VideoRenderer {
                 };
                 let old_textures = std::mem::replace(&mut self.textures, textures);
                 let old_fbos = std::mem::replace(&mut self.fbos, fbos);
-                unsafe { destroy_targets(&self.gl, &old_textures, &old_fbos) };
+                // The image Slint last displayed may still borrow the old
+                // front texture; retire the targets and destroy them on the
+                // next call, once the replacement frame has been composited.
+                self.retired = Some((old_textures, old_fbos));
                 self.size = sz;
                 self.clear_black(0);
                 self.clear_black(1);
                 return Some(self.current_image());
             }
+        }
+
+        // The size change handled on the previous call has been composited;
+        // its retired targets can be destroyed now.
+        if let Some((textures, fbos)) = self.retired.take() {
+            unsafe { destroy_targets(&self.gl, &textures, &fbos) };
         }
 
         let flags = unsafe { ffi::mpv_render_context_update(self.rc) };
@@ -281,6 +295,9 @@ impl VideoRenderer {
                     drop(Box::from_raw(self.update_ctx as *mut Box<dyn Fn() + Send>));
                     self.update_ctx = std::ptr::null_mut();
                 }
+            }
+            if let Some((textures, fbos)) = self.retired.take() {
+                destroy_targets(&self.gl, &textures, &fbos);
             }
             destroy_targets(&self.gl, &self.textures, &self.fbos);
         }
