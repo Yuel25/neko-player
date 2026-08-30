@@ -64,7 +64,7 @@ song.lrc
 
 After downloading the Release archive, keep `neko-player.exe` and `libmpv-2.dll` in the same directory.
 
-Alternatively, install the app with `neko-player-setup-1.1.1.exe`. The installer supports common audio and video file associations, registers neko player as a candidate under Windows Settings → Default Apps, and adds “Open with neko player” to File Explorer's context menu.
+Alternatively, install the app with `neko-player-setup-1.1.2.exe`. The installer supports common audio and video file associations, registers neko player as a candidate under Windows Settings → Default Apps, and adds “Open with neko player” to File Explorer's context menu.
 
 ## Building from Source
 
