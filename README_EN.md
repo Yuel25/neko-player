@@ -31,7 +31,7 @@ A modern Windows media player built with Rust, Slint, and libmpv.
 - Volume, mute, playback speed, audio-track, and subtitle-track controls; volume amplification up to 200%, with an amber indicator above 100%
 - Synchronized same-name LRC lyrics with UTF-8, UTF-16, CP932, and CP936 support
 - Save the current video frame as a PNG image
-- Fullscreen mode, keyboard shortcuts, and an auto-hiding control bar
+- Fullscreen mode, keyboard shortcuts, and an auto-hiding control bar (hides after 1 s idle while playing or paused; move the mouse to bring it back)
 
 Settings are stored in `%APPDATA%\neko-player\config.json`. Delete this file to reset all remembered state.
 

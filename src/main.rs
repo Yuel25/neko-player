@@ -26,7 +26,7 @@ use std::time::Duration;
 slint::include_modules!();
 
 const SPEED_STEPS: [f64; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
-const CONTROLS_IDLE_MS: u64 = 2500;
+const CONTROLS_IDLE_MS: u64 = 1000;
 
 fn main() {
     diagnostics::start_session();
@@ -347,19 +347,18 @@ fn main() {
 
     // --- UI callbacks ---
     // Commands also count as activity so the control bar never hides while
-    // the user is interacting with it.
-    let keep_active = |ui: &MainWindow, timer: &slint::Timer, player: &Arc<MpvPlayer>| {
+    // the user is interacting with it. The bar hides after idle in every
+    // state — including paused — so it never covers the picture for long.
+    let keep_active = |ui: &MainWindow, timer: &slint::Timer| {
         ui.set_controls_visible(true);
         timer.start(
             slint::TimerMode::SingleShot,
             Duration::from_millis(CONTROLS_IDLE_MS),
             {
-                let player = player.clone();
                 let weak = ui.as_weak();
                 move || {
                     let Some(ui) = weak.upgrade() else { return };
-                    let playing = !player.state.lock().unwrap().paused;
-                    if playing && !ui.get_bar_hover() {
+                    if !ui.get_bar_hover() {
                         ui.set_controls_visible(false);
                     }
                 }
@@ -369,12 +368,11 @@ fn main() {
 
     let activity_timer = std::rc::Rc::new(slint::Timer::default());
     {
-        let player = player.clone();
         let weak = ui.as_weak();
         let timer = activity_timer.clone();
         ui.on_notify_activity(move || {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
             }
         });
     }
@@ -385,7 +383,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_play_pause(move || {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
             }
             player.command("cycle pause");
         });
@@ -396,7 +394,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_seek(move |frac| {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
                 ui.set_resume_visible(false);
             }
             player.seek_fraction(frac as f64);
@@ -408,7 +406,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_seek_by(move |sec| {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
                 ui.set_resume_visible(false);
             }
             player.seek_relative(sec as f64);
@@ -420,7 +418,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_step_frame(move |direction| {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
             }
             player.step_frame(direction);
         });
@@ -431,7 +429,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_cycle_audio(move || {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
             }
             player.cycle_audio();
         });
@@ -442,7 +440,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_cycle_sub(move || {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
             }
             player.cycle_sub();
         });
@@ -453,7 +451,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_cycle_speed(move || {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
             }
             let cur = player.state.lock().unwrap().speed;
             let idx = SPEED_STEPS
@@ -471,7 +469,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_toggle_mute(move || {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
             }
             player.command("cycle mute");
         });
@@ -482,7 +480,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_set_volume(move |vol| {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
             }
             player.set_volume(vol as f64);
         });
@@ -493,18 +491,17 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_volume_by(move |delta| {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
             }
             player.volume_by(delta as f64);
         });
     }
     {
-        let player = player.clone();
         let weak = ui.as_weak();
         let timer = activity_timer.clone();
         ui.on_toggle_fullscreen(move || {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
                 let win = ui.window();
                 let fullscreen = !win.is_fullscreen();
                 win.set_fullscreen(fullscreen);
@@ -587,7 +584,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_prev_track(move || {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
                 ui.set_resume_visible(false);
             }
             player.skip_prev();
@@ -599,7 +596,7 @@ fn main() {
         let timer = activity_timer.clone();
         ui.on_next_track(move || {
             if let Some(ui) = weak.upgrade() {
-                keep_active(&ui, &timer, &player);
+                keep_active(&ui, &timer);
                 ui.set_resume_visible(false);
             }
             player.skip_next();
@@ -762,7 +759,7 @@ fn main() {
     }
 
     // Kick the idle timer once so the bar hides during unattended playback.
-    keep_active(&ui, &activity_timer, &player);
+    keep_active(&ui, &activity_timer);
 
     // With no media loading there may be no mpv event to trigger the wakeup
     // sync; push the restored playlist into the UI once up front.
